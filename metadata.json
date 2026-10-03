@@ -1,0 +1,6 @@
+{
+  "name": "Permaculture App - Bush TV & Regenerative Living",
+  "description": "Where permaculture creators & regenerative communities connect, share, and earn with Bush TV fireside chats and the Watering Economy.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
