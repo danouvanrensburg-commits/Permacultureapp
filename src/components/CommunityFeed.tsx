@@ -381,14 +381,6 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
               Your Feed
             </h1>
           </div>
-
-          <button
-            onClick={() => setIsPostComposerOpen(true)}
-            className="flex items-center space-x-2 px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-stone-950 font-bold text-xs shadow-md transition-all active:scale-95 cursor-pointer"
-          >
-            <Plus className="h-3.5 w-3.5 stroke-[2.5]" />
-            <span>Post Moment</span>
-          </button>
         </div>
 
         {/* ============================================================ */}

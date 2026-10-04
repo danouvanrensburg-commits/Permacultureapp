@@ -145,6 +145,17 @@ interface PermacultureContextType {
   markNotificationAsRead: (id: string) => void;
   markAllNotificationsAsRead: () => void;
   clearNotification: (id: string) => void;
+  createChannel: (channelData: {
+    name: string;
+    description: string;
+    category: 'public' | 'followers' | 'supporter_5' | 'vip_10';
+    moderator_ids?: string[];
+    topic_tags?: string[];
+    access_requirement_type?: 'guild_tier' | 'monthly_drops';
+    required_tier_id?: string;
+    required_tier_name?: string;
+    monthly_drops_cost?: number;
+  }) => BushTVChannel;
 }
 
 const PermacultureContext = createContext<PermacultureContextType | undefined>(undefined);
@@ -1694,6 +1705,98 @@ export const PermacultureProvider: React.FC<{ children: React.ReactNode }> = ({ 
     });
   };
 
+  const createChannel = (channelData: {
+    name: string;
+    description: string;
+    category: 'public' | 'followers' | 'supporter_5' | 'vip_10';
+    moderator_ids?: string[];
+    topic_tags?: string[];
+    access_requirement_type?: 'guild_tier' | 'monthly_drops';
+    required_tier_id?: string;
+    required_tier_name?: string;
+    monthly_drops_cost?: number;
+  }): BushTVChannel => {
+    const cleanName = channelData.name.trim().replace(/^#+/, '');
+    const slug = cleanName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || `channel-${Date.now()}`;
+    const formattedName = `#${slug}`;
+
+    const newChannel: BushTVChannel = {
+      id: `ch_${Date.now()}`,
+      slug,
+      name: formattedName,
+      description: channelData.description.trim() || 'Regenerative circle discussion',
+      category: channelData.category,
+      tier_required: channelData.category === 'public' ? 'public' : 'followers',
+      is_locked: false,
+      active_viewers_count: 1,
+      topic_tags: channelData.topic_tags && channelData.topic_tags.length > 0
+        ? channelData.topic_tags
+        : [slug.replace(/-/g, '_'), 'permaculture'],
+      owner_id: currentUser.id,
+      moderator_ids: channelData.moderator_ids || [],
+      access_requirement_type: channelData.access_requirement_type,
+      required_tier_id: channelData.required_tier_id,
+      required_tier_name: channelData.required_tier_name,
+      monthly_drops_cost: channelData.monthly_drops_cost,
+      min_moments_unlock: channelData.monthly_drops_cost || (channelData.category === 'followers' ? 40 : 200),
+      host: {
+        id: currentUser.id,
+        username: currentUser.username,
+        full_name: currentUser.full_name,
+        avatar_url: currentUser.avatar_url,
+        badge: currentUser.badge || 'Circle Host'
+      },
+      pinned_notice: `Welcome to ${formattedName}! Channel created by @${currentUser.username}.`
+    };
+
+    setChannels(prev => {
+      const updated = [...prev, newChannel];
+      try {
+        localStorage.setItem('perma_channels', JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+    setUnlockedChannelIds(prev => [...prev, newChannel.id]);
+    setCurrentChannelState(newChannel);
+    try {
+      localStorage.setItem('perma_current_channel_id', newChannel.id);
+    } catch {}
+
+    setMessages(prev => {
+      const updated = {
+        ...prev,
+        [newChannel.id]: [
+          {
+            id: `msg_${Date.now()}_init`,
+            channel_id: newChannel.id,
+            user_id: currentUser.id,
+            user: {
+              id: currentUser.id,
+              username: currentUser.username,
+              full_name: currentUser.full_name,
+              avatar_url: currentUser.avatar_url,
+              badge: currentUser.badge || 'Circle Host',
+              tier: currentUser.tier
+            },
+            content: `Welcome to the ${formattedName} fireside circle! ✨ Ground rules: share knowledge, respect regenerative ethics, and stoke our collective fire.`,
+            created_at: new Date().toISOString(),
+            moments_tipped: 0,
+            reactions: { '🔥': 1 }
+          }
+        ]
+      };
+      try {
+        localStorage.setItem('perma_messages', JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
+    return newChannel;
+  };
+
   const likePost = (postId: string) => {
     setPosts(prev =>
       prev.map(p => {
@@ -2149,7 +2252,8 @@ export const PermacultureProvider: React.FC<{ children: React.ReactNode }> = ({ 
         addNotification,
         markNotificationAsRead,
         markAllNotificationsAsRead,
-        clearNotification
+        clearNotification,
+        createChannel
       }}
     >
       {children}

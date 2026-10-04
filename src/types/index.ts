@@ -113,6 +113,12 @@ export interface BushTVChannel {
   is_locked: boolean;
   active_viewers_count: number;
   topic_tags: string[];
+  owner_id?: string;
+  moderator_ids?: string[];
+  access_requirement_type?: 'guild_tier' | 'monthly_drops';
+  required_tier_id?: string;
+  required_tier_name?: string;
+  monthly_drops_cost?: number;
   host: {
     id: string;
     username: string;

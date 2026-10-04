@@ -43,9 +43,11 @@ interface BushTVChatProps {
 export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
   const {
     currentUser,
+    allUsers,
     channels,
     currentChannel,
     setCurrentChannel,
+    createChannel,
     messages,
     momentsBalance,
     givingWalletBalance,
@@ -62,6 +64,53 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
     isLoggedIn,
     openAuthModal
   } = usePermaculture();
+
+  // Channel creation modal state
+  const [isCreateChannelModalOpen, setIsCreateChannelModalOpen] = useState<boolean>(false);
+  const [newChannelName, setNewChannelName] = useState<string>('');
+  const [newChannelAccessLevel, setNewChannelAccessLevel] = useState<'public' | 'followers'>('public');
+  const [newChannelDescription, setNewChannelDescription] = useState<string>('');
+  const [selectedModeratorIds, setSelectedModeratorIds] = useState<string[]>([]);
+  const [moderatorSearchQuery, setModeratorSearchQuery] = useState<string>('');
+
+  // Guild Exclusive access requirement state for channel creation
+  const [accessRequirementType, setAccessRequirementType] = useState<'guild_tier' | 'monthly_drops'>('guild_tier');
+  const [selectedTierId, setSelectedTierId] = useState<string>('tier_seedling');
+  const [monthlyDropsCost, setMonthlyDropsCost] = useState<number>(40);
+
+  // Channel access verification prompt modal state
+  const [channelUnlockPrompt, setChannelUnlockPrompt] = useState<BushTVChannel | null>(null);
+
+  // Available Guild Tiers for creator selection
+  const defaultGuildTiers = [
+    { id: 'tier_seedling', name: 'Seedling Tier ($5.00/mo)', price_usd: 5, badge: 'Seedling' },
+    { id: 'tier_canopy', name: 'Canopy Tier ($15.00/mo)', price_usd: 15, badge: 'Canopy Steward' },
+    { id: 'tier_earth_steward', name: 'Earth Steward VIP ($25.00/mo)', price_usd: 25, badge: 'Earth Steward' }
+  ];
+
+  const availableGuildTiers = [
+    ...(currentUser.membership_tiers || []).map(t => ({
+      id: t.id,
+      name: `${t.name} ($${t.price_usd.toFixed(2)}/mo)`,
+      price_usd: t.price_usd,
+      badge: t.badge
+    })),
+    ...defaultGuildTiers
+  ].filter((tier, index, self) => index === self.findIndex(t => t.id === tier.id));
+
+  // Pinned notice editor modal state
+  const [isNoticeEditorOpen, setIsNoticeEditorOpen] = useState<boolean>(false);
+  const [noticeEditorText, setNoticeEditorText] = useState<string>('');
+
+  // Helper to format channel slug
+  const formatSlug = (raw: string) => {
+    return raw
+      .trim()
+      .toLowerCase()
+      .replace(/^#+/, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  };
 
   // Message tipping modal state
   const [tippingMessage, setTippingMessage] = useState<ChatMessage | null>(null);
@@ -139,6 +188,8 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
         setActiveMenuMessageId(null);
         setIsMobileChannelDrawerOpen(false);
         setShowPresenceSidebar(false);
+        setIsCreateChannelModalOpen(false);
+        setIsNoticeEditorOpen(false);
       }
     };
     window.addEventListener('click', handleDocumentClick);
@@ -154,12 +205,145 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
     setTimeout(() => setToastNotice(null), 3500);
   };
 
-  // Host verification for Bush TV pinning: ONLY the Channel Host / Stream Owner can pin messages
-  const isChannelHost =
+  // Channel owner and appointed moderator verification
+  const isChannelOwner =
+    (Boolean(currentChannel.owner_id) && currentUser.id === currentChannel.owner_id) ||
     currentUser.id === currentChannel.host.id ||
     (Boolean(currentUser.username && currentChannel.host.username) &&
       currentUser.username.toLowerCase() === currentChannel.host.username.toLowerCase()) ||
     (currentChannel.host.id === 'user_danou' && (currentUser.id === 'user_current' || currentUser.username === 'danou_van_rensburg'));
+
+  const isChannelModerator =
+    Boolean(
+      currentChannel.moderator_ids &&
+      (currentChannel.moderator_ids.includes(currentUser.id) ||
+       (currentUser.username && currentChannel.moderator_ids.some(m => m.toLowerCase() === currentUser.username.toLowerCase())))
+    );
+
+  const canModerateChannel = isChannelOwner || isChannelModerator || Boolean(currentUser.is_admin);
+
+  // Backward compatibility alias for host check
+  const isChannelHost = isChannelOwner;
+
+  // Handler to create a new channel with access requirements
+  const handleCreateChannelSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const slug = formatSlug(newChannelName);
+    if (!slug) {
+      showNotice('Please enter a valid channel name');
+      return;
+    }
+
+    const tierObj = availableGuildTiers.find(t => t.id === selectedTierId);
+
+    try {
+      const created = createChannel({
+        name: `#${slug}`,
+        description: newChannelDescription.trim() || 'Regenerative fireside circle',
+        category: newChannelAccessLevel,
+        moderator_ids: selectedModeratorIds,
+        access_requirement_type: newChannelAccessLevel === 'followers' ? accessRequirementType : undefined,
+        required_tier_id: newChannelAccessLevel === 'followers' && accessRequirementType === 'guild_tier' ? selectedTierId : undefined,
+        required_tier_name: newChannelAccessLevel === 'followers' && accessRequirementType === 'guild_tier' ? (tierObj?.name || 'Guild Member Tier') : undefined,
+        monthly_drops_cost: newChannelAccessLevel === 'followers' && accessRequirementType === 'monthly_drops' ? monthlyDropsCost : undefined
+      });
+
+      setIsCreateChannelModalOpen(false);
+      setNewChannelName('');
+      setNewChannelDescription('');
+      setNewChannelAccessLevel('public');
+      setSelectedModeratorIds([]);
+      setModeratorSearchQuery('');
+      setAccessRequirementType('guild_tier');
+      setMonthlyDropsCost(40);
+      showNotice(`🔥 Channel #${created.slug} created successfully! You are the owner.`);
+    } catch {
+      showNotice('Failed to create channel. Please try again.');
+    }
+  };
+
+  // Check if channel is unlocked for user according to access requirements
+  const checkIsChannelUnlocked = (ch: BushTVChannel): boolean => {
+    if (ch.category === 'public') return true;
+    if (unlockedChannelIds.includes(ch.id)) return true;
+    if (ch.owner_id === currentUser.id || ch.host.id === currentUser.id) return true;
+    if (ch.moderator_ids && ch.moderator_ids.includes(currentUser.id)) return true;
+    if (currentUser.is_admin) return true;
+
+    // Custom GUILD EXCLUSIVE requirements
+    if (ch.category === 'followers') {
+      if (ch.access_requirement_type === 'monthly_drops') {
+        return unlockedChannelIds.includes(ch.id);
+      }
+      if (ch.access_requirement_type === 'guild_tier') {
+        return currentUser.tier === 'vip' || currentUser.tier === 'supporter';
+      }
+      return currentUser.tier !== 'free' || unlockedChannelIds.includes(ch.id);
+    }
+
+    if (ch.category === 'supporter_5') {
+      return currentUser.tier === 'supporter' || currentUser.tier === 'vip' || unlockedChannelIds.includes(ch.id);
+    }
+
+    if (ch.category === 'vip_10') {
+      return currentUser.tier === 'vip' || unlockedChannelIds.includes(ch.id);
+    }
+
+    return false;
+  };
+
+  // Handle channel selection with access verification
+  const handleSelectChannel = (ch: BushTVChannel) => {
+    if (checkIsChannelUnlocked(ch)) {
+      setCurrentChannel(ch);
+      setIsMobileChannelDrawerOpen(false);
+    } else {
+      // Show clean prompt / modal asking to join the tier or pay required drops
+      setChannelUnlockPrompt(ch);
+    }
+  };
+
+  // Unlock channel from prompt using Rain Drops
+  const handleUnlockFromPrompt = (ch: BushTVChannel) => {
+    const cost = ch.monthly_drops_cost || ch.min_moments_unlock || (ch.category === 'followers' ? 40 : 200);
+    if (momentsBalance < cost) {
+      openTopUpModal();
+      return;
+    }
+    const success = unlockChannel(ch.id);
+    if (success) {
+      setCurrentChannel(ch);
+      setChannelUnlockPrompt(null);
+      setIsMobileChannelDrawerOpen(false);
+      showNotice(`💧 Unlocked ${ch.name}! Welcome to the circle.`);
+    }
+  };
+
+  // Direct user to join creator tier
+  const handleJoinTierFromPrompt = (ch: BushTVChannel) => {
+    setChannelUnlockPrompt(null);
+    setIsMobileChannelDrawerOpen(false);
+    navigate(`profile/${ch.host.username || 'danou_van_rensburg'}`);
+    showNotice(`Redirecting to @${ch.host.username} guild membership tiers`);
+  };
+
+  // Handler to open and save pinned notice
+  const handleOpenNoticeEditor = () => {
+    if (!canModerateChannel) {
+      showNotice('Only channel owners and appointed moderators can update pinned notices');
+      return;
+    }
+    setNoticeEditorText(currentChannel.pinned_notice || '');
+    setIsNoticeEditorOpen(true);
+  };
+
+  const handleSaveNotice = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canModerateChannel) return;
+    pinChannelMessage(currentChannel.id, noticeEditorText.trim() || null);
+    setIsNoticeEditorOpen(false);
+    showNotice(noticeEditorText.trim() ? '📌 Pinned notice updated!' : '📌 Pinned notice cleared');
+  };
 
   // Message author check
   const isMessageAuthor = (msg: ChatMessage) => {
@@ -188,8 +372,8 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
   };
 
   const handleTogglePinMessage = (msg: ChatMessage) => {
-    if (!isChannelHost) {
-      showNotice('Only the Channel Host can pin messages in Bush TV');
+    if (!canModerateChannel) {
+      showNotice('Only channel owners and appointed moderators can pin messages');
       return;
     }
     const isPinned = isMessagePinnedToHeader(msg);
@@ -267,12 +451,7 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const currentMessages = messages[currentChannel.id] || [];
 
-  const isChannelUnlocked =
-    currentChannel.category === 'public' ||
-    unlockedChannelIds.includes(currentChannel.id) ||
-    (currentChannel.category === 'followers' && currentUser.tier !== 'free') ||
-    (currentChannel.category === 'supporter_5' && (currentUser.tier === 'supporter' || currentUser.tier === 'vip')) ||
-    (currentChannel.category === 'vip_10' && currentUser.tier === 'vip');
+  const isChannelUnlocked = checkIsChannelUnlocked(currentChannel);
 
   // Auto-scroll on new message
   useEffect(() => {
@@ -302,7 +481,7 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
 
   const categories = [
     { key: 'public', label: '🪵 Public Firesides', subtitle: 'Open to all earth stewards' },
-    { key: 'followers', label: '🌿 Followers Only', subtitle: 'Community inner circle' },
+    { key: 'followers', label: '🌿 Guild Exclusive', subtitle: 'Followers & guild circle' },
     { key: 'supporter_5', label: '🔥 $5 Supporter Tier', subtitle: 'CAD diagrams & technical schematics' },
     { key: 'vip_10', label: '⭐ $10 VIP Tier', subtitle: 'Direct site design mentorship' }
   ];
@@ -340,6 +519,22 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
               className="w-full bg-neutral-50 dark:bg-stone-950 border border-neutral-200 dark:border-stone-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-neutral-900 dark:text-stone-200 placeholder-neutral-400 dark:placeholder-stone-500 focus:outline-none focus:border-amber-500"
             />
           </div>
+
+          {/* Create Channel Action Button */}
+          <button
+            type="button"
+            onClick={() => {
+              if (!isLoggedIn) {
+                openAuthModal();
+                return;
+              }
+              setIsCreateChannelModalOpen(true);
+            }}
+            className="w-full flex items-center justify-center space-x-1.5 py-2 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-emerald-600 hover:from-amber-400 hover:to-emerald-500 active:scale-[0.98] text-stone-950 font-bold text-xs shadow-sm hover:shadow transition-all cursor-pointer"
+          >
+            <Plus className="h-4 w-4 stroke-[2.5]" />
+            <span>Create Channel</span>
+          </button>
         </div>
 
         {/* Channel Category Lists */}
@@ -358,23 +553,18 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
                 <div className="space-y-0.5">
                   {catChannels.map(ch => {
                     const isSelected = ch.id === currentChannel.id;
-                    const isLocked =
-                      ch.category !== 'public' &&
-                      !unlockedChannelIds.includes(ch.id) &&
-                      !(ch.category === 'followers' && currentUser.tier !== 'free') &&
-                      !(ch.category === 'supporter_5' && (currentUser.tier === 'supporter' || currentUser.tier === 'vip')) &&
-                      !(ch.category === 'vip_10' && currentUser.tier === 'vip');
+                    const isLocked = !checkIsChannelUnlocked(ch);
 
                     return (
                       <div
                         key={ch.id}
                         role="button"
                         tabIndex={0}
-                        onClick={() => setCurrentChannel(ch)}
+                        onClick={() => handleSelectChannel(ch)}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter' || e.key === ' ') {
                             e.preventDefault();
-                            setCurrentChannel(ch);
+                            handleSelectChannel(ch);
                           }
                         }}
                         className={`w-full text-left px-3 py-2 rounded-xl transition-all flex items-center justify-between group cursor-pointer ${
@@ -484,8 +674,8 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
               </button>
             </div>
 
-            {/* Drawer Search */}
-            <div className="p-3 border-b border-neutral-200 dark:border-stone-800">
+            {/* Drawer Search & Create Channel Action */}
+            <div className="p-3 border-b border-neutral-200 dark:border-stone-800 space-y-2">
               <div className="relative">
                 <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-stone-400 dark:text-stone-500" />
                 <input
@@ -496,6 +686,22 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
                   className="w-full bg-neutral-50 dark:bg-stone-950 border border-neutral-200 dark:border-stone-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-neutral-900 dark:text-stone-200 placeholder-neutral-400 dark:placeholder-stone-500 focus:outline-none focus:border-amber-500"
                 />
               </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (!isLoggedIn) {
+                    openAuthModal();
+                    return;
+                  }
+                  setIsMobileChannelDrawerOpen(false);
+                  setIsCreateChannelModalOpen(true);
+                }}
+                className="w-full flex items-center justify-center space-x-1.5 py-2 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-emerald-600 hover:from-amber-400 hover:to-emerald-500 active:scale-[0.98] text-stone-950 font-bold text-xs shadow-sm hover:shadow transition-all cursor-pointer"
+              >
+                <Plus className="h-4 w-4 stroke-[2.5]" />
+                <span>Create Channel</span>
+              </button>
             </div>
 
             {/* Drawer Channel List */}
@@ -514,27 +720,18 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
                     <div className="space-y-1">
                       {catChannels.map(ch => {
                         const isSelected = ch.id === currentChannel.id;
-                        const isLocked =
-                          ch.category !== 'public' &&
-                          !unlockedChannelIds.includes(ch.id) &&
-                          !(ch.category === 'followers' && currentUser.tier !== 'free') &&
-                          !(ch.category === 'supporter_5' && (currentUser.tier === 'supporter' || currentUser.tier === 'vip')) &&
-                          !(ch.category === 'vip_10' && currentUser.tier === 'vip');
+                        const isLocked = !checkIsChannelUnlocked(ch);
 
                         return (
                           <div
                             key={ch.id}
                             role="button"
                             tabIndex={0}
-                            onClick={() => {
-                              setCurrentChannel(ch);
-                              setIsMobileChannelDrawerOpen(false);
-                            }}
+                            onClick={() => handleSelectChannel(ch)}
                             onKeyDown={(e) => {
                               if (e.key === 'Enter' || e.key === ' ') {
                                 e.preventDefault();
-                                setCurrentChannel(ch);
-                                setIsMobileChannelDrawerOpen(false);
+                                handleSelectChannel(ch);
                               }
                             }}
                             className={`w-full text-left px-3 py-2.5 rounded-xl transition-all flex items-center justify-between group cursor-pointer ${
@@ -653,7 +850,7 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
                   : 'bg-purple-500/20 text-purple-800 dark:text-purple-300 border border-purple-500/40'
               }`}>
                 {currentChannel.category === 'public' && 'PUBLIC FIRE'}
-                {currentChannel.category === 'followers' && 'FOLLOWERS'}
+                {currentChannel.category === 'followers' && 'GUILD EXCLUSIVE'}
                 {currentChannel.category === 'supporter_5' && '$5 SUPPORTER'}
                 {currentChannel.category === 'vip_10' && '$10 VIP'}
               </span>
@@ -688,10 +885,19 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
               </div>
 
               <h2 className="text-2xl font-extrabold text-neutral-900 dark:text-stone-100">
-                Locked Tier Channel
+                {currentChannel.category === 'followers' ? 'Guild Exclusive Circle' : 'Locked Tier Channel'}
               </h2>
               <p className="mt-2 text-sm text-stone-500 dark:text-stone-400">
-                <strong className="text-amber-600 dark:text-amber-300 font-semibold">{currentChannel.name}</strong> is restricted to {currentChannel.category === 'supporter_5' ? '$5 Supporter Tier' : '$10 VIP Circle'} members.
+                <strong className="text-amber-600 dark:text-amber-300 font-semibold">{currentChannel.name}</strong>{' '}
+                {currentChannel.category === 'followers' ? (
+                  currentChannel.access_requirement_type === 'monthly_drops' ? (
+                    <>requires a monthly toll of <strong className="text-cyan-600 dark:text-cyan-400 font-bold">💧 {currentChannel.monthly_drops_cost || 40} Rain Drops</strong> to participate.</>
+                  ) : (
+                    <>is exclusive to active <strong className="text-amber-700 dark:text-amber-400 font-bold">{currentChannel.required_tier_name || 'Guild Member Tier'}</strong> subscribers.</>
+                  )
+                ) : (
+                  <>is restricted to {currentChannel.category === 'supporter_5' ? '$5 Supporter Tier' : '$10 VIP Circle'} members.</>
+                )}
               </p>
 
               {/* Creator Card on Locked Screen */}
@@ -738,12 +944,12 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
               <div className="mt-6 p-4 rounded-2xl bg-neutral-50 dark:bg-neutral-950/70 border border-neutral-200 dark:border-neutral-800 text-xs text-neutral-700 dark:text-stone-300 space-y-2 text-left">
                 <div className="flex items-center space-x-2">
                   <CheckCircle2 className="h-4 w-4 text-emerald-500 dark:text-emerald-400 shrink-0" />
-                  <span>Access full CAD designs & site contour masterclasses</span>
+                  <span>Access full CAD designs &amp; site contour masterclasses</span>
                 </div>
                 <div className="flex items-center space-x-2">
                   <CheckCircle2 className="h-4 w-4 text-emerald-500 dark:text-emerald-400 shrink-0" />
                   <span>
-                    Direct Q&A with{' '}
+                    Direct Q&amp;A with{' '}
                     <button
                       type="button"
                       onClick={() => navigate(`profile/${currentChannel.host.username}`)}
@@ -755,35 +961,50 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
                 </div>
                 <div className="flex items-center space-x-2">
                   <CheckCircle2 className="h-4 w-4 text-emerald-500 dark:text-emerald-400 shrink-0" />
-                  <span>Downloadable seed lists & engineering schematics</span>
+                  <span>Downloadable seed lists &amp; engineering schematics</span>
                 </div>
               </div>
 
               {/* CTAs */}
               <div className="mt-8 space-y-3">
-                <button
-                  onClick={openTopUpModal}
-                  className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-cyan-600 via-emerald-600 to-amber-500 text-stone-950 font-extrabold text-sm shadow-xl shadow-emerald-950/30 hover:opacity-95 active:scale-98 transition-all flex items-center justify-center space-x-2"
-                >
-                  <span>🌧️</span>
-                  <span>Plant the Rain - 1 Water Bucket 🪣 (500 💧)</span>
-                </button>
-
-                {momentsBalance >= (currentChannel.min_moments_unlock || 200) ? (
+                {currentChannel.category === 'followers' && currentChannel.access_requirement_type === 'guild_tier' ? (
                   <button
-                    onClick={() => unlockChannel(currentChannel.id)}
-                    className="w-full py-2.5 px-4 rounded-2xl bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-amber-800 dark:text-amber-300 font-semibold text-xs transition-colors flex items-center justify-center space-x-1.5"
+                    onClick={() => handleJoinTierFromPrompt(currentChannel)}
+                    className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-amber-500 via-emerald-600 to-amber-500 text-stone-950 font-extrabold text-sm shadow-xl shadow-amber-950/20 hover:opacity-95 active:scale-98 transition-all flex items-center justify-center space-x-2 cursor-pointer"
                   >
-                    <Sparkles className="h-3.5 w-3.5 text-amber-500 dark:text-amber-400" />
-                    <span>
-                      Unlock With {(currentChannel.min_moments_unlock || 200)} Rain Drops 💧 ({(((currentChannel.min_moments_unlock || 200)) / 500).toFixed(1)} 🪣)
-                    </span>
+                    <span>🌿</span>
+                    <span>Join {currentChannel.required_tier_name || 'Guild Tier'}</span>
                   </button>
                 ) : (
-                  <p className="text-[11px] text-stone-500">
-                    Unlock requires {(currentChannel.min_moments_unlock || 200)} Rain Drops 💧 (Your balance: {momentsBalance.toLocaleString()} 💧 • {(momentsBalance / 500).toFixed(1)} 🪣)
-                  </p>
+                  <button
+                    onClick={openTopUpModal}
+                    className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-cyan-600 via-emerald-600 to-amber-500 text-stone-950 font-extrabold text-sm shadow-xl shadow-emerald-950/30 hover:opacity-95 active:scale-98 transition-all flex items-center justify-center space-x-2 cursor-pointer"
+                  >
+                    <span>🌧️</span>
+                    <span>Plant the Rain - 1 Water Bucket 🪣 (500 💧)</span>
+                  </button>
                 )}
+
+                {(() => {
+                  const unlockCost = currentChannel.monthly_drops_cost || currentChannel.min_moments_unlock || (currentChannel.category === 'followers' ? 40 : 200);
+                  const hasEnough = momentsBalance >= unlockCost;
+
+                  return hasEnough ? (
+                    <button
+                      onClick={() => handleUnlockFromPrompt(currentChannel)}
+                      className="w-full py-2.5 px-4 rounded-2xl bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-amber-800 dark:text-amber-300 font-semibold text-xs transition-colors flex items-center justify-center space-x-1.5 cursor-pointer"
+                    >
+                      <Sparkles className="h-3.5 w-3.5 text-amber-500 dark:text-amber-400" />
+                      <span>
+                        Unlock With {unlockCost} Rain Drops 💧 ({((unlockCost) / 500).toFixed(2)} 🪣)
+                      </span>
+                    </button>
+                  ) : (
+                    <p className="text-[11px] text-stone-500">
+                      Unlock requires {unlockCost} Rain Drops 💧 (Your balance: {momentsBalance.toLocaleString()} 💧 • {(momentsBalance / 500).toFixed(1)} 🪣)
+                    </p>
+                  );
+                })()}
               </div>
             </div>
           </div>
@@ -835,34 +1056,62 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
                     >
                       View Profile →
                     </button>
+                    {currentChannel.moderator_ids && currentChannel.moderator_ids.length > 0 && (
+                      <span className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-cyan-500/15 text-cyan-800 dark:text-cyan-300 border border-cyan-500/30 hidden sm:inline-flex items-center space-x-1">
+                        <span>🛡️</span>
+                        <span>{currentChannel.moderator_ids.length} Mod{currentChannel.moderator_ids.length > 1 ? 's' : ''}</span>
+                      </span>
+                    )}
                   </div>
                 </div>
 
-                {/* Pinned Notice if present */}
-                {currentChannel.pinned_notice && (
-                  <div className="p-1.5 sm:p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-neutral-800 dark:text-stone-200 shadow-sm flex items-center justify-between gap-2 animate-in fade-in duration-200 min-w-0 flex-1 sm:max-w-md">
-                    <div className="flex items-center space-x-1.5 min-w-0 flex-1">
-                      <Pin className="h-3 w-3 text-amber-500 dark:text-amber-400 fill-amber-500 dark:fill-amber-400 shrink-0" />
-                      <div className="min-w-0 text-left truncate">
-                        <span className="font-semibold text-amber-700 dark:text-amber-400 mr-1 text-[11px]">Notice:</span>
-                        <span className="text-[11px] text-neutral-800 dark:text-stone-200 truncate">{currentChannel.pinned_notice}</span>
+                {/* Pinned Notice Display & Moderator Actions */}
+                <div className="flex items-center space-x-2">
+                  {currentChannel.pinned_notice ? (
+                    <div className="p-1.5 sm:p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-neutral-800 dark:text-stone-200 shadow-sm flex items-center justify-between gap-2 animate-in fade-in duration-200 min-w-0 flex-1 sm:max-w-md">
+                      <div className="flex items-center space-x-1.5 min-w-0 flex-1">
+                        <Pin className="h-3 w-3 text-amber-500 dark:text-amber-400 fill-amber-500 dark:fill-amber-400 shrink-0" />
+                        <div className="min-w-0 text-left truncate">
+                          <span className="font-semibold text-amber-700 dark:text-amber-400 mr-1 text-[11px]">Notice:</span>
+                          <span className="text-[11px] text-neutral-800 dark:text-stone-200 truncate">{currentChannel.pinned_notice}</span>
+                        </div>
                       </div>
+                      {canModerateChannel && (
+                        <div className="flex items-center space-x-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={handleOpenNoticeEditor}
+                            className="text-stone-400 hover:text-amber-500 p-1 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
+                            title="Edit Notice (Owner/Mod)"
+                          >
+                            <Pencil className="h-3 w-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              pinChannelMessage(currentChannel.id, null);
+                              showNotice('📌 Pinned notice removed from header');
+                            }}
+                            className="text-stone-400 hover:text-red-500 p-1 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors shrink-0 cursor-pointer"
+                            title="Unpin Notice (Owner/Mod)"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </div>
+                      )}
                     </div>
-                    {isChannelHost && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          pinChannelMessage(currentChannel.id, null);
-                          showNotice('📌 Pinned notice removed from header');
-                        }}
-                        className="text-stone-400 hover:text-red-500 p-0.5 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors shrink-0 cursor-pointer"
-                        title="Unpin notice (Channel Host)"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    )}
-                  </div>
-                )}
+                  ) : canModerateChannel ? (
+                    <button
+                      type="button"
+                      onClick={handleOpenNoticeEditor}
+                      className="flex items-center space-x-1 px-2.5 py-1 rounded-xl text-[11px] font-semibold text-amber-700 dark:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 transition-all cursor-pointer shrink-0"
+                      title="Set a pinned notice for this channel"
+                    >
+                      <Pin className="h-3 w-3" />
+                      <span>+ Pin Notice</span>
+                    </button>
+                  ) : null}
+                </div>
               </div>
             </div>
             {currentMessages.length === 0 ? (
@@ -919,6 +1168,49 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
                                 {msg.user.badge}
                               </span>
                             )}
+                            {/* Appointed Moderator or Channel Owner Shield Badge */}
+                            {(() => {
+                              const isOwner =
+                                (Boolean(currentChannel.owner_id) && (msg.user_id === currentChannel.owner_id || msg.user?.id === currentChannel.owner_id)) ||
+                                msg.user_id === currentChannel.host.id ||
+                                msg.user?.id === currentChannel.host.id ||
+                                (Boolean(currentChannel.host.username && msg.user?.username) &&
+                                  currentChannel.host.username.toLowerCase() === msg.user.username.toLowerCase());
+
+                              const isMod =
+                                Boolean(
+                                  currentChannel.moderator_ids &&
+                                  (currentChannel.moderator_ids.includes(msg.user_id) ||
+                                   currentChannel.moderator_ids.includes(msg.user?.id) ||
+                                   (msg.user?.username && currentChannel.moderator_ids.some(m => m.toLowerCase() === msg.user.username.toLowerCase())))
+                                );
+
+                              if (isOwner) {
+                                return (
+                                  <span
+                                    className="inline-flex items-center space-x-0.5 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/20 text-amber-800 dark:text-amber-300 border border-amber-500/40 shadow-xs"
+                                    title="Channel Owner / Host"
+                                  >
+                                    <span className="text-xs">🛡️</span>
+                                    <span>Owner</span>
+                                  </span>
+                                );
+                              }
+
+                              if (isMod) {
+                                return (
+                                  <span
+                                    className="inline-flex items-center space-x-0.5 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-cyan-500/20 text-cyan-800 dark:text-cyan-300 border border-cyan-500/40 shadow-xs"
+                                    title="Appointed Moderator"
+                                  >
+                                    <span className="text-xs">🛡️</span>
+                                    <span>Mod</span>
+                                  </span>
+                                );
+                              }
+
+                              return null;
+                            })()}
                           </div>
                           <div className="flex items-center space-x-2 mt-0.5">
                             <p className="text-[11px] text-stone-500 font-mono">
@@ -958,8 +1250,8 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
                               onClick={(e) => e.stopPropagation()}
                               className="absolute right-0 top-full mt-1.5 w-48 rounded-2xl bg-white dark:bg-stone-900 border border-neutral-200 dark:border-stone-800 p-1.5 shadow-2xl text-xs z-30 animate-in fade-in zoom-in-95 duration-150"
                             >
-                              {/* Bush TV Rule: ONLY the Channel Host / Stream Owner can pin messages */}
-                              {isChannelHost && (
+                              {/* Channel Owner or Appointed Moderator can pin/unpin notices */}
+                              {canModerateChannel && (
                                 <>
                                   <button
                                     type="button"
@@ -973,7 +1265,7 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
                                 </>
                               )}
 
-                              {/* Author options (for regular users in Bush TV: Edit, Delete) */}
+                              {/* Author options (Edit, Delete) */}
                               {isMessageAuthor(msg) ? (
                                 <>
                                   <button
@@ -995,8 +1287,21 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
                                   </button>
                                 </>
                               ) : (
-                                /* Viewer options (for other members' messages: Copy Link, Report) */
+                                /* Non-author options: Moderator Delete, Copy Link, Report */
                                 <>
+                                  {canModerateChannel && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleStartDelete(msg.id)}
+                                        className="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors cursor-pointer font-medium text-left"
+                                      >
+                                        <Trash2 className="h-4 w-4 text-red-500" />
+                                        <span>Delete (Mod)</span>
+                                      </button>
+                                      <div className="my-1 border-t border-neutral-200 dark:border-stone-800" />
+                                    </>
+                                  )}
                                   <button
                                     type="button"
                                     onClick={() => handleCopyLink(msg)}
@@ -1789,6 +2094,655 @@ export const BushTVChat: React.FC<BushTVChatProps> = ({ navigate }) => {
                 </>
               );
             })()}
+          </div>
+        </div>
+      )}
+      {/* Pinned Notice Editor Modal (Owner & Appointed Moderators) */}
+      {isNoticeEditorOpen && (
+        <div
+          onClick={() => setIsNoticeEditorOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-150"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="max-w-md w-full rounded-3xl bg-white dark:bg-stone-900 border border-neutral-200 dark:border-stone-800 p-6 shadow-2xl space-y-4 animate-in zoom-in-95 duration-150"
+          >
+            <div className="flex items-center justify-between border-b border-neutral-200 dark:border-stone-800 pb-3">
+              <div className="flex items-center space-x-2">
+                <Pin className="h-5 w-5 text-amber-500" />
+                <div>
+                  <h3 className="font-bold text-neutral-900 dark:text-stone-100 text-base">Channel Pinned Notice</h3>
+                  <p className="text-[11px] text-stone-500">Visible to all stewards at the top of {currentChannel.name}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsNoticeEditorOpen(false)}
+                className="p-1 rounded-lg text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 hover:bg-neutral-100 dark:hover:bg-stone-800 transition-colors cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveNotice} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-neutral-700 dark:text-stone-300 mb-1.5">
+                  Announcement / Notice Text
+                </label>
+                <textarea
+                  value={noticeEditorText}
+                  onChange={(e) => setNoticeEditorText(e.target.value)}
+                  rows={3}
+                  className="w-full rounded-2xl bg-neutral-50 dark:bg-stone-950 border border-neutral-200 dark:border-stone-800 p-3 text-xs text-neutral-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-500/50 resize-none"
+                  placeholder="e.g. Live swale teardown stream starting at 4 PM UTC. Bring your contour maps!"
+                  autoFocus
+                />
+              </div>
+
+              <div className="flex items-center justify-between pt-1">
+                {currentChannel.pinned_notice ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      pinChannelMessage(currentChannel.id, null);
+                      setIsNoticeEditorOpen(false);
+                      showNotice('📌 Pinned notice cleared');
+                    }}
+                    className="text-xs text-red-600 dark:text-red-400 hover:underline cursor-pointer"
+                  >
+                    Clear Notice
+                  </button>
+                ) : <div />}
+
+                <div className="flex items-center space-x-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsNoticeEditorOpen(false)}
+                    className="px-3.5 py-2 rounded-xl text-xs font-semibold text-stone-500 hover:text-stone-700 dark:hover:text-stone-300 hover:bg-neutral-100 dark:hover:bg-stone-800 transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-4 py-2 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-400 text-stone-950 transition-colors cursor-pointer shadow-sm"
+                  >
+                    Save Notice
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Channel Creation Modal */}
+      {isCreateChannelModalOpen && (
+        <div
+          onClick={() => setIsCreateChannelModalOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-150"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="relative w-full max-w-lg rounded-3xl bg-white dark:bg-stone-900 border border-neutral-200 dark:border-stone-800 p-6 shadow-2xl text-left space-y-4 max-h-[90vh] overflow-y-auto animate-in zoom-in-95 duration-150"
+          >
+            {/* Modal Header */}
+            <div className="flex items-start justify-between border-b border-neutral-200 dark:border-stone-800 pb-3">
+              <div className="flex items-center space-x-2.5">
+                <div className="p-2 rounded-xl bg-gradient-to-br from-amber-500/20 to-emerald-500/20 border border-amber-500/30 text-amber-600 dark:text-amber-400">
+                  <Flame className="h-5 w-5 animate-flame" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-neutral-900 dark:text-stone-100 text-base">Create New Channel</h3>
+                  <p className="text-xs text-stone-500 dark:text-stone-400">
+                    Stoke a new fireside room for your permaculture guild or project
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCreateChannelModalOpen(false)}
+                className="p-1 rounded-xl text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-neutral-100 dark:hover:bg-stone-800 transition-colors cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateChannelSubmit} className="space-y-4">
+              {/* Channel Name & Slug Formatter */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-neutral-800 dark:text-stone-200">
+                  Channel Name <span className="text-amber-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={newChannelName}
+                  onChange={(e) => setNewChannelName(e.target.value)}
+                  placeholder="e.g. Soil Health, Compost Microbes, Water Swales"
+                  className="w-full rounded-2xl bg-neutral-50 dark:bg-stone-950 border border-neutral-200 dark:border-stone-800 px-3.5 py-2.5 text-xs text-neutral-900 dark:text-stone-100 placeholder-neutral-400 dark:placeholder-stone-500 focus:outline-none focus:ring-2 focus:ring-amber-500/50 font-medium"
+                />
+                {/* Real-time slug formatter preview */}
+                <div className="flex items-center space-x-2 text-[11px] font-mono text-amber-600 dark:text-amber-400 bg-amber-500/10 px-2.5 py-1 rounded-lg border border-amber-500/20">
+                  <span className="text-stone-500">Preview:</span>
+                  <strong className="font-bold">
+                    {formatSlug(newChannelName) ? `#${formatSlug(newChannelName)}` : '#soil-health'}
+                  </strong>
+                </div>
+              </div>
+
+              {/* Access Level Toggle: PUBLIC FIRE vs GUILD EXCLUSIVE */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-neutral-800 dark:text-stone-200">
+                  Access Level
+                </label>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setNewChannelAccessLevel('public')}
+                    className={`p-3 rounded-2xl border text-left transition-all cursor-pointer ${
+                      newChannelAccessLevel === 'public'
+                        ? 'bg-emerald-500/15 border-emerald-500 text-neutral-900 dark:text-stone-100 shadow-sm'
+                        : 'bg-neutral-50 dark:bg-stone-950 border-neutral-200 dark:border-stone-800 text-stone-600 dark:text-stone-400 hover:border-neutral-300 dark:hover:border-stone-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-bold">PUBLIC FIRE</span>
+                      <span className="text-[10px] px-1.5 py-0.2 rounded font-mono bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 font-semibold">
+                        Free
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-stone-500 dark:text-stone-400 leading-tight">
+                      Open to all community stewards &amp; visitors
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setNewChannelAccessLevel('followers')}
+                    className={`p-3 rounded-2xl border text-left transition-all cursor-pointer ${
+                      newChannelAccessLevel === 'followers'
+                        ? 'bg-amber-500/15 border-amber-500 text-neutral-900 dark:text-stone-100 shadow-sm'
+                        : 'bg-neutral-50 dark:bg-stone-950 border-neutral-200 dark:border-stone-800 text-stone-600 dark:text-stone-400 hover:border-neutral-300 dark:hover:border-stone-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-bold">GUILD EXCLUSIVE</span>
+                      <span className="text-[10px] px-1.5 py-0.2 rounded font-mono bg-amber-500/20 text-amber-800 dark:text-amber-300 font-semibold">
+                        Guild
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-stone-500 dark:text-stone-400 leading-tight">
+                      Restricted to followers &amp; active guild members
+                    </p>
+                  </button>
+                </div>
+
+                {/* Conditional Access Settings Panel when GUILD EXCLUSIVE is selected */}
+                {newChannelAccessLevel === 'followers' && (
+                  <div className="p-4 mt-2.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-3.5 animate-in fade-in slide-in-from-top-2 duration-200">
+                    <div className="flex items-center space-x-2">
+                      <Lock className="h-4 w-4 text-amber-500 shrink-0" />
+                      <div>
+                        <h4 className="text-xs font-bold text-amber-900 dark:text-amber-300 uppercase tracking-wide">
+                          Guild Exclusive Access Requirements
+                        </h4>
+                        <p className="text-[11px] text-stone-500 dark:text-stone-400">
+                          Configure who can enter and participate in this fireside circle
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Access Requirement Type: Radio/Toggle */}
+                    <div className="space-y-1.5">
+                      <label className="block text-[11px] font-semibold text-neutral-700 dark:text-stone-300">
+                        Access Requirement Type
+                      </label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setAccessRequirementType('guild_tier')}
+                          className={`flex items-center space-x-2 p-2.5 rounded-xl border text-xs cursor-pointer transition-all text-left ${
+                            accessRequirementType === 'guild_tier'
+                              ? 'bg-amber-500/20 border-amber-500 text-neutral-900 dark:text-stone-100 font-bold shadow-xs'
+                              : 'bg-white dark:bg-stone-900 border-neutral-200 dark:border-stone-800 text-stone-600 dark:text-stone-400 hover:border-neutral-300'
+                          }`}
+                        >
+                          <span className={`h-3.5 w-3.5 rounded-full border flex items-center justify-center shrink-0 ${
+                            accessRequirementType === 'guild_tier' ? 'border-amber-500 bg-amber-500' : 'border-stone-400'
+                          }`}>
+                            {accessRequirementType === 'guild_tier' && <span className="h-1.5 w-1.5 rounded-full bg-white" />}
+                          </span>
+                          <span>Required Guild Tier</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setAccessRequirementType('monthly_drops')}
+                          className={`flex items-center space-x-2 p-2.5 rounded-xl border text-xs cursor-pointer transition-all text-left ${
+                            accessRequirementType === 'monthly_drops'
+                              ? 'bg-cyan-500/20 border-cyan-500 text-neutral-900 dark:text-stone-100 font-bold shadow-xs'
+                              : 'bg-white dark:bg-stone-900 border-neutral-200 dark:border-stone-800 text-stone-600 dark:text-stone-400 hover:border-neutral-300'
+                          }`}
+                        >
+                          <span className={`h-3.5 w-3.5 rounded-full border flex items-center justify-center shrink-0 ${
+                            accessRequirementType === 'monthly_drops' ? 'border-cyan-500 bg-cyan-500' : 'border-stone-400'
+                          }`}>
+                            {accessRequirementType === 'monthly_drops' && <span className="h-1.5 w-1.5 rounded-full bg-white" />}
+                          </span>
+                          <span>Monthly Drops Toll</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Option A: Required Guild Tier */}
+                    {accessRequirementType === 'guild_tier' && (
+                      <div className="space-y-1.5 animate-in fade-in duration-150">
+                        <label className="block text-[11px] font-semibold text-neutral-700 dark:text-stone-300">
+                          Select Required Active Tier
+                        </label>
+                        <select
+                          value={selectedTierId}
+                          onChange={(e) => setSelectedTierId(e.target.value)}
+                          className="w-full rounded-xl bg-white dark:bg-stone-900 border border-neutral-200 dark:border-stone-800 px-3 py-2 text-xs text-neutral-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-500 font-medium cursor-pointer"
+                        >
+                          {availableGuildTiers.map(tier => (
+                            <option key={tier.id} value={tier.id}>
+                              {tier.name}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="text-[10px] text-stone-500">
+                          Stewards must hold this active tier subscription to enter the circle.
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Option B: Monthly Rain Drops Toll */}
+                    {accessRequirementType === 'monthly_drops' && (
+                      <div className="space-y-2 animate-in fade-in duration-150">
+                        <div className="flex items-center justify-between">
+                          <label className="block text-[11px] font-semibold text-neutral-700 dark:text-stone-300">
+                            Monthly Rain Drops Toll (Multiples of 20)
+                          </label>
+                          <span className="text-[11px] font-mono font-bold text-cyan-600 dark:text-cyan-400">
+                            💧 {monthlyDropsCost} Drops ({((monthlyDropsCost) / 500).toFixed(2)} 🪣)
+                          </span>
+                        </div>
+
+                        {/* Multiples-of-20 Presets */}
+                        <div className="flex flex-wrap gap-1.5">
+                          {[20, 40, 60, 100, 200].map(amt => (
+                            <button
+                              key={amt}
+                              type="button"
+                              onClick={() => setMonthlyDropsCost(amt)}
+                              className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
+                                monthlyDropsCost === amt
+                                  ? 'bg-cyan-500 text-stone-950 ring-2 ring-cyan-400 shadow-xs'
+                                  : 'bg-white dark:bg-stone-900 border border-neutral-200 dark:border-stone-800 text-neutral-700 dark:text-stone-300 hover:bg-neutral-100 dark:hover:bg-stone-800'
+                              }`}
+                            >
+                              {amt} Drops
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="relative">
+                          <input
+                            type="number"
+                            min={20}
+                            step={20}
+                            value={monthlyDropsCost}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value, 10) || 20;
+                              setMonthlyDropsCost(Math.max(20, Math.ceil(val / 20) * 20));
+                            }}
+                            className="w-full rounded-xl bg-white dark:bg-stone-900 border border-neutral-200 dark:border-stone-800 px-3 py-2 text-xs text-neutral-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 font-mono"
+                            placeholder="e.g. 40"
+                          />
+                          <span className="absolute right-3 top-2 text-xs font-mono text-stone-400">Drops / mo</span>
+                        </div>
+                        <p className="text-[10px] text-stone-500">
+                          Stewards must pay this recurring Rain Drop toll to participate in this circle.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Description / Topic Guidelines */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-neutral-800 dark:text-stone-200">
+                  Description / Topic Guidelines
+                </label>
+                <textarea
+                  value={newChannelDescription}
+                  onChange={(e) => setNewChannelDescription(e.target.value)}
+                  rows={2}
+                  placeholder="Share what this room is for, discussion topics, and ground rules..."
+                  className="w-full rounded-2xl bg-neutral-50 dark:bg-stone-950 border border-neutral-200 dark:border-stone-800 p-3 text-xs text-neutral-900 dark:text-stone-100 placeholder-neutral-400 dark:placeholder-stone-500 focus:outline-none focus:ring-2 focus:ring-amber-500/50 resize-none font-medium"
+                />
+              </div>
+
+              {/* Add Moderators Search & Select */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold text-neutral-800 dark:text-stone-200">
+                    Appoint Moderators
+                  </label>
+                  <span className="text-[10px] text-stone-500 font-mono">
+                    {selectedModeratorIds.length} Appointed
+                  </span>
+                </div>
+                <p className="text-[11px] text-stone-500 dark:text-stone-400">
+                  Appointed moderators receive a shield badge (🛡️) and can delete messages or update channel notices.
+                </p>
+
+                {/* Selected Moderators Chips */}
+                {selectedModeratorIds.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 p-2 rounded-xl bg-neutral-100 dark:bg-stone-950 border border-neutral-200 dark:border-stone-800">
+                    {selectedModeratorIds.map(modId => {
+                      const modUser = (allUsers || []).find(u => u.id === modId);
+                      if (!modUser) return null;
+                      return (
+                        <span
+                          key={modId}
+                          className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-white dark:bg-stone-900 border border-cyan-500/40 text-neutral-900 dark:text-stone-100 text-xs shadow-xs"
+                        >
+                          <img
+                            src={modUser.avatar_url || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=300&q=80'}
+                            alt=""
+                            className="h-4 w-4 rounded-full object-cover"
+                          />
+                          <span className="font-semibold text-[11px] font-mono">@{modUser.username}</span>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedModeratorIds(prev => prev.filter(id => id !== modId))}
+                            className="text-stone-400 hover:text-red-500 ml-1 cursor-pointer"
+                            title="Remove moderator"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* User Search Input */}
+                <div className="relative">
+                  <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-stone-400 dark:text-stone-500" />
+                  <input
+                    type="text"
+                    value={moderatorSearchQuery}
+                    onChange={(e) => setModeratorSearchQuery(e.target.value)}
+                    placeholder="Search active members to tag as moderator..."
+                    className="w-full bg-neutral-50 dark:bg-stone-950 border border-neutral-200 dark:border-stone-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-neutral-900 dark:text-stone-200 placeholder-neutral-400 dark:placeholder-stone-500 focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+
+                {/* Search Candidates List */}
+                <div className="max-h-36 overflow-y-auto space-y-1 rounded-2xl border border-neutral-200 dark:border-stone-800 p-1.5 bg-neutral-50/50 dark:bg-stone-950/50">
+                  {(() => {
+                    const candidates = (allUsers || [])
+                      .filter(u => u.id !== currentUser.id && (
+                        u.full_name.toLowerCase().includes(moderatorSearchQuery.toLowerCase()) ||
+                        u.username.toLowerCase().includes(moderatorSearchQuery.toLowerCase()) ||
+                        (u.badge && u.badge.toLowerCase().includes(moderatorSearchQuery.toLowerCase()))
+                      ))
+                      .slice(0, 5);
+
+                    if (candidates.length === 0) {
+                      return (
+                        <p className="text-[11px] text-stone-400 text-center py-2">
+                          No matching active members found.
+                        </p>
+                      );
+                    }
+
+                    return candidates.map(member => {
+                      const isSelected = selectedModeratorIds.includes(member.id);
+                      return (
+                        <div
+                          key={member.id}
+                          onClick={() => {
+                            setSelectedModeratorIds(prev =>
+                              isSelected ? prev.filter(id => id !== member.id) : [...prev, member.id]
+                            );
+                          }}
+                          className={`flex items-center justify-between p-2 rounded-xl transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-cyan-500/15 border border-cyan-500/40 text-neutral-900 dark:text-stone-100'
+                              : 'hover:bg-neutral-100 dark:hover:bg-stone-800 text-neutral-700 dark:text-stone-300'
+                          }`}
+                        >
+                          <div className="flex items-center space-x-2.5 truncate">
+                            <img
+                              src={member.avatar_url || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=300&q=80'}
+                              alt=""
+                              className="h-6 w-6 rounded-lg object-cover"
+                            />
+                            <div className="truncate">
+                              <p className="text-xs font-semibold truncate leading-tight">{member.full_name}</p>
+                              <p className="text-[10px] text-stone-500 font-mono truncate leading-tight">@{member.username}</p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center space-x-1.5 shrink-0">
+                            {member.badge && (
+                              <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-neutral-200 dark:bg-stone-800 text-stone-600 dark:text-stone-400">
+                                {member.badge}
+                              </span>
+                            )}
+                            <span
+                              className={`text-[11px] font-bold px-2 py-0.5 rounded-lg transition-colors ${
+                                isSelected
+                                  ? 'bg-cyan-500 text-stone-950'
+                                  : 'bg-neutral-200 dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:bg-neutral-300'
+                              }`}
+                            >
+                              {isSelected ? '✓ Appointed' : '+ Mod'}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              </div>
+
+              {/* Creator info reminder */}
+              <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-800 dark:text-amber-300 flex items-center space-x-2">
+                <Shield className="h-4 w-4 text-amber-500 shrink-0" />
+                <p className="text-[11px]">
+                  You (<strong className="font-semibold">@{currentUser.username}</strong>) will be assigned as channel <strong className="font-semibold">owner_id</strong> with full moderation privileges.
+                </p>
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center justify-end space-x-2.5 pt-2 border-t border-neutral-200 dark:border-stone-800">
+                <button
+                  type="button"
+                  onClick={() => setIsCreateChannelModalOpen(false)}
+                  className="px-4 py-2.5 rounded-xl text-xs font-semibold text-stone-500 hover:text-stone-700 dark:hover:text-stone-300 hover:bg-neutral-100 dark:hover:bg-stone-800 transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={!formatSlug(newChannelName)}
+                  className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-emerald-600 hover:from-amber-400 hover:to-emerald-500 active:scale-[0.98] text-stone-950 font-bold text-xs shadow-md transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-1.5 cursor-pointer"
+                >
+                  <Plus className="h-4 w-4 stroke-[2.5]" />
+                  <span>Create Channel</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {/* Access Verification & Unlock Prompt Modal */}
+      {channelUnlockPrompt && (
+        <div
+          onClick={() => setChannelUnlockPrompt(null)}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-150"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="relative w-full max-w-md rounded-3xl bg-white dark:bg-stone-900 border border-amber-500/40 p-6 shadow-2xl text-left space-y-4 animate-in zoom-in-95 duration-150"
+          >
+            {/* Header */}
+            <div className="flex items-start justify-between">
+              <div className="flex items-center space-x-3">
+                <div className="h-11 w-11 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-500 text-xl shadow-inner">
+                  <Lock className="h-6 w-6 text-amber-500" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-neutral-900 dark:text-stone-100 text-base flex items-center space-x-1.5">
+                    <span>{channelUnlockPrompt.name}</span>
+                  </h3>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full font-semibold uppercase bg-amber-500/20 text-amber-800 dark:text-amber-300 border border-amber-500/40">
+                    {channelUnlockPrompt.category === 'followers' ? 'GUILD EXCLUSIVE' : 'TIER RESTRICTED'}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setChannelUnlockPrompt(null)}
+                className="p-1 rounded-xl text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-neutral-100 dark:hover:bg-stone-800 transition-colors cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Channel Info & Host Card */}
+            <div className="p-3.5 rounded-2xl bg-neutral-50 dark:bg-stone-950 border border-neutral-200 dark:border-stone-800 flex items-center justify-between">
+              <div className="flex items-center space-x-2.5 truncate">
+                <img
+                  src={channelUnlockPrompt.host.avatar_url || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=300&q=80'}
+                  alt=""
+                  className="h-9 w-9 rounded-xl object-cover ring-1 ring-amber-500/40"
+                />
+                <div className="truncate">
+                  <p className="text-xs font-bold text-neutral-900 dark:text-stone-100 truncate">{channelUnlockPrompt.host.full_name}</p>
+                  <p className="text-[10px] text-stone-500 font-mono truncate">Host: @{channelUnlockPrompt.host.username}</p>
+                </div>
+              </div>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-neutral-200 dark:bg-stone-800 text-stone-600 dark:text-stone-300 shrink-0">
+                {channelUnlockPrompt.host.badge}
+              </span>
+            </div>
+
+            {/* Requirement Explanation */}
+            <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 space-y-2 text-xs">
+              <p className="text-neutral-800 dark:text-stone-200">
+                {channelUnlockPrompt.category === 'followers' ? (
+                  channelUnlockPrompt.access_requirement_type === 'monthly_drops' ? (
+                    <>
+                      This circle requires a monthly contribution of{' '}
+                      <strong className="text-cyan-600 dark:text-cyan-400 font-bold">
+                        💧 {channelUnlockPrompt.monthly_drops_cost || 40} Rain Drops
+                      </strong>{' '}
+                      to participate.
+                    </>
+                  ) : (
+                    <>
+                      This circle is exclusive to active{' '}
+                      <strong className="text-amber-700 dark:text-amber-400 font-bold">
+                        {channelUnlockPrompt.required_tier_name || 'Guild Member Tier'}
+                      </strong>{' '}
+                      subscribers.
+                    </>
+                  )
+                ) : (
+                  <>
+                    This circle is restricted to{' '}
+                    <strong className="text-amber-700 dark:text-amber-400 font-bold">
+                      {channelUnlockPrompt.category === 'supporter_5' ? '$5 Supporter Tier' : '$10 VIP Circle'}
+                    </strong>{' '}
+                    members.
+                  </>
+                )}
+              </p>
+
+              {channelUnlockPrompt.description && (
+                <p className="text-[11px] text-stone-500 dark:text-stone-400 italic">
+                  &ldquo;{channelUnlockPrompt.description}&rdquo;
+                </p>
+              )}
+            </div>
+
+            {/* Action Buttons */}
+            <div className="space-y-2 pt-1">
+              {channelUnlockPrompt.access_requirement_type === 'monthly_drops' || channelUnlockPrompt.category !== 'followers' ? (
+                (() => {
+                  const cost = channelUnlockPrompt.monthly_drops_cost || channelUnlockPrompt.min_moments_unlock || 40;
+                  const hasEnough = momentsBalance >= cost;
+
+                  return (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleUnlockFromPrompt(channelUnlockPrompt)}
+                        className="w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 active:scale-[0.98] text-stone-950 font-bold text-xs shadow-md transition-all flex items-center justify-center space-x-2 cursor-pointer"
+                      >
+                        <span>💧</span>
+                        <span>
+                          Pay {cost} Rain Drops to Unlock ({((cost) / 500).toFixed(2)} 🪣)
+                        </span>
+                      </button>
+
+                      {!hasEnough && (
+                        <div className="flex items-center justify-between text-[11px] px-2 text-stone-500">
+                          <span>Your balance: 💧 {momentsBalance} Drops</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setChannelUnlockPrompt(null);
+                              openTopUpModal();
+                            }}
+                            className="text-cyan-600 dark:text-cyan-400 font-bold hover:underline cursor-pointer"
+                          >
+                            + Top Up Rain Drops
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => handleJoinTierFromPrompt(channelUnlockPrompt)}
+                    className="w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-amber-500 to-emerald-600 hover:from-amber-400 hover:to-emerald-500 active:scale-[0.98] text-stone-950 font-bold text-xs shadow-md transition-all flex items-center justify-center space-x-2 cursor-pointer"
+                  >
+                    <span>🌿</span>
+                    <span>
+                      Join {channelUnlockPrompt.required_tier_name || 'Guild Tier'}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleUnlockFromPrompt(channelUnlockPrompt)}
+                    className="w-full py-2.5 px-4 rounded-xl bg-neutral-100 dark:bg-stone-800 hover:bg-neutral-200 dark:hover:bg-stone-700 text-neutral-800 dark:text-stone-200 font-semibold text-xs transition-colors flex items-center justify-center space-x-1.5 cursor-pointer"
+                  >
+                    <span>💧</span>
+                    <span>Or Unlock with {(channelUnlockPrompt.min_moments_unlock || 200)} Rain Drops</span>
+                  </button>
+                </>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setChannelUnlockPrompt(null)}
+                className="w-full py-2 rounded-xl text-xs font-semibold text-stone-500 hover:text-stone-700 dark:hover:text-stone-300 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       )}
