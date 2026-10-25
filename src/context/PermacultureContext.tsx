@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
 import {
   BushTVChannel,
   ChatMessage,
@@ -9,7 +9,11 @@ import {
   CreatorMembershipTier,
   ModerationReport,
   PostComment,
-  PermacultureNotification
+  PermacultureNotification,
+  Course,
+  CourseReview,
+  CourseCategoryMeta,
+  DigitalProduct
 } from '../types';
 import {
   SEED_CHANNELS,
@@ -17,8 +21,14 @@ import {
   SEED_POSTS,
   SEED_PROFILES,
   SEED_TRANSACTIONS,
-  TOP_UP_PACKAGES
+  TOP_UP_PACKAGES,
+  SEED_COURSES,
+  SEED_COURSE_REVIEWS,
+  SEED_DIGITAL_PRODUCTS
 } from '../lib/supabase';
+import { askDan, containsDanMention, DAN_BOT_PROFILE } from '../services/danService';
+import { numberToWords } from '../lib/numberWords';
+import { interceptTipDonation } from '../services/tipCommentService';
 
 interface TipFeedback {
   id: string;
@@ -57,8 +67,8 @@ interface PermacultureContextType {
   isSchemaModalOpen: boolean;
   setSchemaModalOpen: (open: boolean) => void;
   tipFeedbackList: TipFeedback[];
-  tipMessage: (messageId: string, amount: number) => boolean;
-  tipPost: (postId: string, amount: number) => boolean;
+  tipMessage: (messageId: string, amount: number, messageText?: string) => boolean;
+  tipPost: (postId: string, amount: number, message?: string) => boolean;
   plantTheRain: (
     creatorId: string,
     rainDrops: number,
@@ -115,8 +125,6 @@ interface PermacultureContextType {
   followedCreatorIds: string[];
   toggleFollowCreator: (creatorId: string) => void;
   isFollowingCreator: (creatorId: string) => boolean;
-  isFiresideAudioPlaying: boolean;
-  toggleFiresideAudio: () => void;
   theme: 'dark' | 'light';
   toggleTheme: () => void;
   isLoggedIn: boolean;
@@ -139,6 +147,7 @@ interface PermacultureContextType {
   deleteComment: (commentId: string) => void;
   getCommentsForPost: (postId: string) => PostComment[];
   tipComment: (commentId: string, amount: number) => { success: boolean; message: string };
+  interceptTipDonation: typeof interceptTipDonation;
   notifications: PermacultureNotification[];
   unreadNotificationCount: number;
   addNotification: (notification: Omit<PermacultureNotification, 'id' | 'created_at'>) => void;
@@ -156,107 +165,46 @@ interface PermacultureContextType {
     required_tier_name?: string;
     monthly_drops_cost?: number;
   }) => BushTVChannel;
+  courses: Course[];
+  createCourse: (courseData: Omit<Course, 'id' | 'created_at'>) => Course;
+  updateCourse: (courseId: string, updates: Partial<Course>) => void;
+  deleteCourse: (courseId: string) => void;
+  courseCategories: CourseCategoryMeta[];
+  addCourseCategory: (category: { name: string; icon?: string; description?: string }) => CourseCategoryMeta;
+  enrolledCourseIds: string[];
+  enrollCourse: (courseId: string) => boolean;
+  completedLessonIds: string[];
+  toggleLessonCompletion: (lessonId: string) => void;
+  isLessonCompleted: (lessonId: string) => boolean;
+  isCourseUnlocked: (course: Course) => boolean;
+  courseReviews: CourseReview[];
+  addCourseReview: (reviewData: { course_id: string; rating: number; title?: string; comment: string }) => CourseReview;
+  deleteCourseReview: (reviewId: string) => void;
+  likeCourseReview: (reviewId: string) => void;
+  getCourseReviews: (courseId: string) => CourseReview[];
+  isCourseFinishedByStudent: (courseId: string) => boolean;
+  digitalProducts: DigitalProduct[];
+  unlockedProductIds: string[];
+  isProductUnlocked: (product: DigitalProduct) => boolean;
+  unlockDigitalProduct: (productId: string) => boolean;
+  publishDigitalProduct: (productData: Omit<DigitalProduct, 'id' | 'created_at'>) => DigitalProduct;
 }
 
 const PermacultureContext = createContext<PermacultureContextType | undefined>(undefined);
 
-// Web Audio campfire crackle generator (synthesized procedural fire audio)
-class CampfireAudioEngine {
-  private audioCtx: AudioContext | null = null;
-  private isPlaying = false;
-  private noiseNode: AudioNode | null = null;
-  private intervalId: number | null = null;
-
-  start() {
-    if (this.isPlaying) return;
-    try {
-      const AudioCtxClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      this.audioCtx = new AudioCtxClass();
-      
-      // Buffer for soft brown/pink rumble
-      const bufferSize = this.audioCtx.sampleRate * 2;
-      const buffer = this.audioCtx.createBuffer(1, bufferSize, this.audioCtx.sampleRate);
-      const data = buffer.getChannelData(0);
-      let lastOut = 0.0;
-      for (let i = 0; i < bufferSize; i++) {
-        const white = Math.random() * 2 - 1;
-        lastOut = (lastOut + 0.02 * white) / 1.02;
-        data[i] = lastOut * 0.15;
-      }
-
-      const noise = this.audioCtx.createBufferSource();
-      noise.buffer = buffer;
-      noise.loop = true;
-
-      const filter = this.audioCtx.createBiquadFilter();
-      filter.type = 'lowpass';
-      filter.frequency.value = 450;
-
-      const gainNode = this.audioCtx.createGain();
-      gainNode.gain.value = 0.25;
-
-      noise.connect(filter);
-      filter.connect(gainNode);
-      gainNode.connect(this.audioCtx.destination);
-      noise.start();
-      this.noiseNode = noise;
-      this.isPlaying = true;
-
-      // Random micro crackles / pops
-      this.intervalId = window.setInterval(() => {
-        if (!this.audioCtx || !this.isPlaying) return;
-        if (Math.random() > 0.4) {
-          const popOsc = this.audioCtx.createOscillator();
-          const popGain = this.audioCtx.createGain();
-          popOsc.type = 'triangle';
-          popOsc.frequency.setValueAtTime(200 + Math.random() * 800, this.audioCtx.currentTime);
-          popGain.gain.setValueAtTime(0.04 + Math.random() * 0.08, this.audioCtx.currentTime);
-          popGain.gain.exponentialRampToValueAtTime(0.0001, this.audioCtx.currentTime + 0.04 + Math.random() * 0.06);
-
-          popOsc.connect(popGain);
-          popGain.connect(this.audioCtx.destination);
-          popOsc.start();
-          popOsc.stop(this.audioCtx.currentTime + 0.12);
-        }
-      }, 180);
-    } catch {
-      // Audio autoplay restrictions or unsupported
-    }
-  }
-
-  stop() {
-    if (!this.isPlaying) return;
-    if (this.intervalId) {
-      clearInterval(this.intervalId);
-      this.intervalId = null;
-    }
-    if (this.noiseNode) {
-      try {
-        (this.noiseNode as AudioBufferSourceNode).stop();
-      } catch {
-        // ignore
-      }
-      this.noiseNode = null;
-    }
-    if (this.audioCtx) {
-      try {
-        this.audioCtx.close();
-      } catch {
-        // ignore
-      }
-      this.audioCtx = null;
-    }
-    this.isPlaying = false;
-  }
-
-  get active() {
-    return this.isPlaying;
-  }
-}
-
-const fireAudioEngine = new CampfireAudioEngine();
-
 export const DEFAULT_AVATAR = 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=300&q=80';
+
+export const DEFAULT_COURSE_CATEGORIES: CourseCategoryMeta[] = [
+  { key: 'Composting', label: 'Composting', icon: '♻️', description: 'Thermal piles, vermiculture & biochar' },
+  { key: 'Water Harvesting', label: 'Water Harvesting', icon: '💧', description: 'Keyline, swales, dams & gravity feeds' },
+  { key: 'Food Forests', label: 'Food Forests', icon: '🌳', description: 'Multi-strata guilds & perennial systems' },
+  { key: 'Soil Biology', label: 'Soil Biology', icon: '🔬', description: 'Microscopy, compost teas & fungal hyphae' },
+  { key: 'Natural Building', label: 'Natural Building', icon: '🪵', description: 'Cob, strawbale, roundwood & earthen plaster' },
+  { key: 'Animals & Grazing', label: 'Animals & Grazing', icon: '🐑', description: 'Holistic planned grazing & silvopasture' },
+  { key: 'Appropriate Tech', label: 'Appropriate Tech', icon: '⚙️', description: 'Solar dryers, rocket mass heaters & biogas' },
+  { key: 'Urban Permaculture', label: 'Urban Permaculture', icon: '🏙️', description: 'Balcony systems, micro-greens & wicking beds' },
+  { key: 'Herbalism & Foraging', label: 'Herbalism & Foraging', icon: '🌿', description: 'Wildcrafting, medicinal teas & perennial herbs' }
+];
 
 export const sanitizeProfile = (profile: UserProfile): UserProfile => {
   let goal = profile.goal;
@@ -460,6 +408,23 @@ export const INITIAL_MODERATION_REPORTS: ModerationReport[] = [
 
 export const DEFAULT_NOTIFICATIONS: PermacultureNotification[] = [
   {
+    id: 'notif_0',
+    type: 'tip',
+    actor: {
+      id: 'user_danou',
+      username: 'danou_van_rensburg',
+      full_name: 'Danou van Rensburg',
+      avatar_url: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=300&q=80',
+      badge: 'Earthworks Lead'
+    },
+    title: 'Danou donated twenty drops (20 💧)',
+    description: 'Donated 20 drops on your Broadacre Swale & Keyline dam moment!',
+    amount_drops: 20,
+    target_route: 'feed#post_1',
+    created_at: '5m ago',
+    is_read: false
+  },
+  {
     id: 'notif_1',
     type: 'tip',
     actor: {
@@ -469,8 +434,8 @@ export const DEFAULT_NOTIFICATIONS: PermacultureNotification[] = [
       avatar_url: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=150&q=80',
       badge: 'Soil Doctor'
     },
-    title: 'Rain Drops Planted 🌧️',
-    description: 'Planted 60 Rain Drops on your Keyline Swale & Microclimate post!',
+    title: 'Dr. Elena Rostova donated sixty drops (60 💧)',
+    description: 'Planted sixty drops on your Keyline Swale & Microclimate post!',
     amount_drops: 60,
     target_route: 'profile/danou_van_rensburg',
     created_at: '12m ago',
@@ -592,6 +557,24 @@ export const INITIAL_COMMENTS: PostComment[] = [
     created_at: new Date(Date.now() - 3600000 * 2).toISOString(),
     drops_received: 30,
     total_drops_received: 30
+  },
+  {
+    id: 'cmt_tip_danou_1',
+    post_id: 'post_1',
+    parent_id: null,
+    author: {
+      id: 'user_danou',
+      username: 'danou_van_rensburg',
+      full_name: 'Danou van Rensburg',
+      avatar_url: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=300&q=80',
+      badge: 'Earthworks Lead'
+    },
+    content: '💧 Danou donated twenty drops (20 Rain Drops): "Stoking the fires for great broadacre hydrology work!"',
+    created_at: new Date(Date.now() - 3600000 * 1).toISOString(),
+    drops_received: 20,
+    total_drops_received: 20,
+    is_tip_comment: true,
+    tip_amount: 20
   },
   {
     id: 'cmt_2',
@@ -782,7 +765,6 @@ export const PermacultureProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const [isTxHistoryOpen, setTxHistoryOpen] = useState(false);
   const [isSchemaModalOpen, setSchemaModalOpen] = useState(false);
   const [tipFeedbackList, setTipFeedbackList] = useState<TipFeedback[]>([]);
-  const [isFiresideAudioPlaying, setIsFiresideAudioPlaying] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
     const saved = localStorage.getItem('perma_is_logged_in');
     return saved !== null ? saved === 'true' : true;
@@ -818,7 +800,7 @@ export const PermacultureProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     const saved = localStorage.getItem('perma_theme');
     if (saved === 'dark' || saved === 'light') return saved;
-    return 'dark';
+    return 'light';
   });
 
   // Sync theme to <html> tag and localStorage
@@ -933,7 +915,7 @@ export const PermacultureProvider: React.FC<{ children: React.ReactNode }> = ({ 
     }, 2800);
   };
 
-  const tipMessage = (messageId: string, amount: number): boolean => {
+  const tipMessage = (messageId: string, amount: number, messageText?: string): boolean => {
     // Enforce 20 Rain Drops minimum and multiples of 20
     const tipAmount = Math.max(20, Math.ceil(amount / 20) * 20);
 
@@ -1011,11 +993,47 @@ export const PermacultureProvider: React.FC<{ children: React.ReactNode }> = ({ 
     };
     setTransactions(prev => [newTx, ...prev]);
 
+    // Intercept successful tip donation and automatically generate a public comment on target Bush TV message
+    const newTipComment = interceptTipDonation({
+      postId: messageId,
+      donor: {
+        id: currentUser.id,
+        username: currentUser.username,
+        full_name: currentUser.full_name,
+        avatar_url: currentUser.avatar_url,
+        badge: currentUser.badge
+      },
+      amount: tipAmount,
+      message: messageText?.trim()
+    });
+
+    setComments(prev => [...prev, newTipComment]);
+
+    // Send real-time notification to the recipient of the tip
+    if (targetUserId) {
+      addNotification({
+        type: 'tip',
+        actor: {
+          id: currentUser.id,
+          username: currentUser.username,
+          full_name: currentUser.full_name,
+          avatar_url: currentUser.avatar_url,
+          badge: currentUser.badge
+        },
+        title: 'Received Rain Drops on Bush TV! 💧',
+        description: `${currentUser.full_name} planted ${tipAmount} Rain Drops on your Bush TV message! (+$${netEarningsUsd.toFixed(2)} USD)`,
+        target_id: messageId,
+        target_route: '/bush-tv',
+        amount_drops: tipAmount,
+        is_read: false
+      });
+    }
+
     triggerTipAnimation(tipAmount, `${targetUser} (+$${netEarningsUsd.toFixed(2)})`);
     return true;
   };
 
-  const tipPost = (postId: string, amount: number): boolean => {
+  const tipPost = (postId: string, amount: number, message?: string): boolean => {
     // Enforce 20 Rain Drops minimum and multiples of 20
     const tipAmount = Math.max(20, Math.ceil(amount / 20) * 20);
 
@@ -1039,7 +1057,8 @@ export const PermacultureProvider: React.FC<{ children: React.ReactNode }> = ({ 
           return {
             ...p,
             moments_harvested: newDrops,
-            totalReceivedDrops: newDrops
+            totalReceivedDrops: newDrops,
+            comments_count: (p.comments_count || 0) + 1
           };
         }
         return p;
@@ -1082,6 +1101,43 @@ export const PermacultureProvider: React.FC<{ children: React.ReactNode }> = ({ 
       net_usd: netEarningsUsd
     };
     setTransactions(prev => [newTx, ...prev]);
+
+    // Intercept successful tip donation and automatically generate a public comment on target post
+    const words = numberToWords(tipAmount);
+    const newTipComment = interceptTipDonation({
+      postId,
+      donor: {
+        id: currentUser.id,
+        username: currentUser.username,
+        full_name: currentUser.full_name,
+        avatar_url: currentUser.avatar_url,
+        badge: currentUser.badge
+      },
+      amount: tipAmount,
+      message: message?.trim()
+    });
+
+    setComments(prev => [...prev, newTipComment]);
+
+    // Send real-time notification to the post author
+    addNotification({
+      type: 'tip',
+      actor: {
+        id: currentUser.id,
+        username: currentUser.username,
+        full_name: currentUser.full_name,
+        avatar_url: currentUser.avatar_url,
+        badge: currentUser.badge
+      },
+      title: `${currentUser.full_name} donated ${words} drops (${tipAmount} 💧)`,
+      description: message?.trim()
+        ? `"${message.trim()}" on "${postTitle}" (+$${netEarningsUsd.toFixed(2)} USD)`
+        : `Planted on "${postTitle}" (+$${netEarningsUsd.toFixed(2)} USD)`,
+      target_id: postId,
+      target_route: `feed#post_${postId}`,
+      amount_drops: tipAmount,
+      is_read: false
+    });
 
     triggerTipAnimation(tipAmount, `${authorName} (+$${netEarningsUsd.toFixed(2)})`);
     return true;
@@ -1182,6 +1238,51 @@ export const PermacultureProvider: React.FC<{ children: React.ReactNode }> = ({ 
       net_usd: netEarningsUsd
     };
     setTransactions(prev => [newTx, ...prev]);
+
+    // Intercept successful creator tip donation and automatically generate a public comment on their latest moment
+    const words = numberToWords(rainDrops);
+    const donorName = isPrivate ? 'Generous Steward' : currentUser.full_name;
+    const creatorPost = posts.find(p => p.author_id === creatorId || p.author?.id === creatorId);
+    if (creatorPost) {
+      const newTipComment = interceptTipDonation({
+        postId: creatorPost.id,
+        donor: {
+          id: currentUser.id,
+          username: isPrivate ? 'generous_steward' : currentUser.username,
+          full_name: donorName,
+          avatar_url: currentUser.avatar_url,
+          badge: currentUser.badge
+        },
+        amount: rainDrops,
+        message: message?.trim(),
+        isPrivate
+      });
+
+      setComments(prev => [...prev, newTipComment]);
+      setPosts(prev =>
+        prev.map(p => (p.id === creatorPost.id ? { ...p, comments_count: (p.comments_count || 0) + 1 } : p))
+      );
+    }
+
+    // Send real-time notification to the creator
+    addNotification({
+      type: 'tip',
+      actor: {
+        id: currentUser.id,
+        username: isPrivate ? 'generous_steward' : currentUser.username,
+        full_name: donorName,
+        avatar_url: isPrivate ? 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80' : currentUser.avatar_url,
+        badge: currentUser.badge
+      },
+      title: `${donorName} donated ${words} drops (${rainDrops.toLocaleString()} 💧)`,
+      description: message?.trim()
+        ? `"${message.trim()}" (+$${netEarningsUsd.toFixed(2)} USD)`
+        : `Planted towards your creator goal (+$${netEarningsUsd.toFixed(2)} USD)`,
+      target_id: creatorId,
+      target_route: `profile/${creator?.username || creatorId}`,
+      amount_drops: rainDrops,
+      is_read: false
+    });
 
     // Visual animation feedback
     triggerTipAnimation(rainDrops, `${creatorName} (+$${netEarningsUsd.toFixed(2)} earnings)`);
@@ -1594,6 +1695,37 @@ export const PermacultureProvider: React.FC<{ children: React.ReactNode }> = ({ 
       ...prev,
       [channelId]: [...(prev[channelId] || []), newMsg]
     }));
+
+    // Trigger Dan AI if @dan or @bill is mentioned in Bush TV Fireside Chat
+    if (containsDanMention(content)) {
+      askDan({
+        prompt: content,
+        imageUrl: media?.imageUrl
+      }).then(result => {
+        const danMsg: ChatMessage = {
+          id: `msg_dan_${Date.now()}`,
+          channel_id: channelId,
+          user_id: DAN_BOT_PROFILE.id,
+          user: {
+            id: DAN_BOT_PROFILE.id,
+            username: DAN_BOT_PROFILE.username,
+            full_name: DAN_BOT_PROFILE.full_name,
+            avatar_url: DAN_BOT_PROFILE.avatar_url,
+            badge: DAN_BOT_PROFILE.badge,
+            tier: 'vip'
+          },
+          content: result.reply,
+          created_at: new Date().toISOString(),
+          moments_tipped: 0,
+          reactions: { '🌿': 1, '🔥': 1 }
+        };
+
+        setMessages(prev => ({
+          ...prev,
+          [channelId]: [...(prev[channelId] || []), danMsg]
+        }));
+      });
+    }
   };
 
   const createPost = (data: {
@@ -1626,6 +1758,50 @@ export const PermacultureProvider: React.FC<{ children: React.ReactNode }> = ({ 
     };
 
     setPosts(prev => [newPost, ...prev]);
+
+    // Trigger Dan AI if @dan or @bill is mentioned in the moment post
+    const fullText = `${data.title ? data.title + ' ' : ''}${data.content}`;
+    if (containsDanMention(fullText)) {
+      askDan({
+        prompt: fullText,
+        imageUrl: data.mediaUrls?.[0]
+      }).then(result => {
+        const danComment: PostComment = {
+          id: `cmt_dan_${Date.now()}`,
+          post_id: newPost.id,
+          parent_id: null,
+          author: {
+            id: DAN_BOT_PROFILE.id,
+            username: DAN_BOT_PROFILE.username,
+            full_name: DAN_BOT_PROFILE.full_name,
+            avatar_url: DAN_BOT_PROFILE.avatar_url,
+            badge: DAN_BOT_PROFILE.badge
+          },
+          content: result.reply,
+          created_at: new Date().toISOString()
+        };
+
+        setComments(prev => [...prev, danComment]);
+        setPosts(prev =>
+          prev.map(p => (p.id === newPost.id ? { ...p, comments_count: (p.comments_count || 0) + 1 } : p))
+        );
+
+        addNotification({
+          type: 'comment',
+          actor: {
+            id: DAN_BOT_PROFILE.id,
+            username: DAN_BOT_PROFILE.username,
+            full_name: DAN_BOT_PROFILE.full_name,
+            avatar_url: DAN_BOT_PROFILE.avatar_url,
+            badge: DAN_BOT_PROFILE.badge
+          },
+          title: 'Dan replied to your moment',
+          description: 'Shared permaculture field advice on your moment',
+          target_route: `feed#post_${newPost.id}`,
+          is_read: false
+        });
+      });
+    }
   };
 
   const [savedPostIds, setSavedPostIds] = useState<string[]>(() => {
@@ -1808,16 +1984,6 @@ export const PermacultureProvider: React.FC<{ children: React.ReactNode }> = ({ 
     );
   };
 
-  const toggleFiresideAudio = () => {
-    if (isFiresideAudioPlaying) {
-      fireAudioEngine.stop();
-      setIsFiresideAudioPlaying(false);
-    } else {
-      fireAudioEngine.start();
-      setIsFiresideAudioPlaying(true);
-    }
-  };
-
   // ------------------------------------------------------------
   // CONTENT MODERATION QUEUE & ACTIONS
   // ------------------------------------------------------------
@@ -1977,6 +2143,89 @@ export const PermacultureProvider: React.FC<{ children: React.ReactNode }> = ({ 
         p.id === postId ? { ...p, comments_count: (p.comments_count || 0) + 1 } : p
       )
     );
+
+    // Send real-time notification to the post or comment author
+    const targetPost = posts.find(p => p.id === postId);
+    if (parentId) {
+      const parentComment = comments.find(c => c.id === parentId);
+      const recipientName = parentComment?.author.full_name || 'author';
+      addNotification({
+        type: 'comment',
+        actor: {
+          id: currentUser.id,
+          username: currentUser.username,
+          full_name: currentUser.full_name,
+          avatar_url: currentUser.avatar_url,
+          badge: currentUser.badge
+        },
+        title: `${currentUser.full_name} replied to your comment`,
+        description: `"${content.slice(0, 70)}${content.length > 70 ? '...' : ''}"`,
+        target_id: postId,
+        target_route: `feed#post_${postId}`,
+        is_read: false
+      });
+    } else {
+      const postTitle = targetPost?.title || targetPost?.content.slice(0, 30) || 'your post';
+      addNotification({
+        type: 'comment',
+        actor: {
+          id: currentUser.id,
+          username: currentUser.username,
+          full_name: currentUser.full_name,
+          avatar_url: currentUser.avatar_url,
+          badge: currentUser.badge
+        },
+        title: `${currentUser.full_name} commented on your post`,
+        description: `"${content.slice(0, 70)}${content.length > 70 ? '...' : ''}" on "${postTitle}"`,
+        target_id: postId,
+        target_route: `feed#post_${postId}`,
+        is_read: false
+      });
+    }
+
+    // Trigger Dan AI if @dan or @bill is mentioned in a comment
+    if (containsDanMention(content)) {
+      const targetPost = posts.find(p => p.id === postId);
+      askDan({
+        prompt: content,
+        imageUrl: targetPost?.media_urls?.[0]
+      }).then(result => {
+        const danReplyComment: PostComment = {
+          id: `cmt_dan_${Date.now()}`,
+          post_id: postId,
+          parent_id: newComment.id,
+          author: {
+            id: DAN_BOT_PROFILE.id,
+            username: DAN_BOT_PROFILE.username,
+            full_name: DAN_BOT_PROFILE.full_name,
+            avatar_url: DAN_BOT_PROFILE.avatar_url,
+            badge: DAN_BOT_PROFILE.badge
+          },
+          content: result.reply,
+          created_at: new Date().toISOString()
+        };
+
+        setComments(prev => [...prev, danReplyComment]);
+        setPosts(prev =>
+          prev.map(p => (p.id === postId ? { ...p, comments_count: (p.comments_count || 0) + 1 } : p))
+        );
+
+        addNotification({
+          type: 'comment',
+          actor: {
+            id: DAN_BOT_PROFILE.id,
+            username: DAN_BOT_PROFILE.username,
+            full_name: DAN_BOT_PROFILE.full_name,
+            avatar_url: DAN_BOT_PROFILE.avatar_url,
+            badge: DAN_BOT_PROFILE.badge
+          },
+          title: 'Dan answered your comment',
+          description: 'Shared permaculture field advice on your comment thread',
+          target_route: `feed#post_${postId}`,
+          is_read: false
+        });
+      });
+    }
 
     return newComment;
   };
@@ -2138,6 +2387,26 @@ export const PermacultureProvider: React.FC<{ children: React.ReactNode }> = ({ 
     };
     setTransactions(prev => [newTx, ...prev]);
 
+    // Automatically intercept tip on comment and generate public reply comment via service
+    const words = numberToWords(tipAmount);
+    const replyTipComment = interceptTipDonation({
+      postId: targetComment.post_id,
+      donor: {
+        id: currentUser.id,
+        username: currentUser.username,
+        full_name: currentUser.full_name,
+        avatar_url: currentUser.avatar_url,
+        badge: currentUser.badge
+      },
+      amount: tipAmount,
+      parentId: commentId
+    });
+
+    setComments(prev => [...prev, replyTipComment]);
+    setPosts(prev =>
+      prev.map(p => (p.id === targetComment.post_id ? { ...p, comments_count: (p.comments_count || 0) + 1 } : p))
+    );
+
     // Visual tip feedback animation
     triggerTipAnimation(tipAmount, `${targetComment.author.full_name} (+$${authorEarningsUsd.toFixed(2)})`);
 
@@ -2151,11 +2420,11 @@ export const PermacultureProvider: React.FC<{ children: React.ReactNode }> = ({ 
         avatar_url: currentUser.avatar_url,
         badge: currentUser.badge
       },
-      title: 'Rain Drops Received 💧',
-      description: `${currentUser.full_name} tipped you ${tipAmount} Rain Drops on your comment!`,
+      title: `${currentUser.full_name} donated ${words} drops on your comment 💧`,
+      description: `Tipped ${tipAmount} Rain Drops on: "${targetComment.content.slice(0, 50)}..."`,
       amount_drops: tipAmount,
       target_id: targetComment.id,
-      target_route: 'feed',
+      target_route: `feed#post_${targetComment.post_id}`,
       is_read: false
     });
 
@@ -2163,6 +2432,471 @@ export const PermacultureProvider: React.FC<{ children: React.ReactNode }> = ({ 
       success: true,
       message: `Tipped ${tipAmount} Rain Drops 💧 to @${targetComment.author.username}!`
     };
+  };
+
+  // --- Course LMS State & Categories ---
+  const [courses, setCourses] = useState<Course[]>(() => {
+    try {
+      const saved = localStorage.getItem('perma_courses_v1');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return SEED_COURSES;
+  });
+
+  const [customCourseCategories, setCustomCourseCategories] = useState<CourseCategoryMeta[]>(() => {
+    try {
+      const saved = localStorage.getItem('perma_custom_course_categories');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [];
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('perma_custom_course_categories', JSON.stringify(customCourseCategories));
+    } catch {}
+  }, [customCourseCategories]);
+
+  const courseCategories: CourseCategoryMeta[] = useMemo(() => {
+    const list: CourseCategoryMeta[] = [...DEFAULT_COURSE_CATEGORIES];
+
+    customCourseCategories.forEach(cat => {
+      if (!list.some(c => c.key.toLowerCase() === cat.key.toLowerCase())) {
+        list.push(cat);
+      }
+    });
+
+    // Auto-discover categories from saved/existing courses
+    courses.forEach(c => {
+      if (c.category && !list.some(existing => existing.key.toLowerCase() === c.category.toLowerCase())) {
+        list.push({
+          key: c.category,
+          label: c.category,
+          icon: '🌱',
+          description: `${c.category} courses & masterclasses`,
+          isCustom: true
+        });
+      }
+    });
+
+    return list;
+  }, [customCourseCategories, courses]);
+
+  const addCourseCategory = (catData: { name: string; icon?: string; description?: string }): CourseCategoryMeta => {
+    const trimmedName = catData.name.trim();
+    const existing = courseCategories.find(c => c.key.toLowerCase() === trimmedName.toLowerCase());
+    if (existing) {
+      return existing;
+    }
+
+    const newCat: CourseCategoryMeta = {
+      key: trimmedName,
+      label: trimmedName,
+      icon: catData.icon?.trim() || '🌿',
+      description: catData.description?.trim() || `Regenerative practices and techniques in ${trimmedName}`,
+      isCustom: true,
+      createdBy: currentUser.id
+    };
+
+    setCustomCourseCategories(prev => {
+      if (prev.some(c => c.key.toLowerCase() === newCat.key.toLowerCase())) {
+        return prev;
+      }
+      return [...prev, newCat];
+    });
+
+    return newCat;
+  };
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('perma_courses_v1', JSON.stringify(courses));
+    } catch {}
+  }, [courses]);
+
+  const [enrolledCourseIds, setEnrolledCourseIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('perma_enrolled_courses');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return ['course_compost_thermal']; // free course enrolled by default
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('perma_enrolled_courses', JSON.stringify(enrolledCourseIds));
+    } catch {}
+  }, [enrolledCourseIds]);
+
+  const [completedLessonIds, setCompletedLessonIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('perma_completed_lessons');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return ['les_1_1', 'les_comp_1'];
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('perma_completed_lessons', JSON.stringify(completedLessonIds));
+    } catch {}
+  }, [completedLessonIds]);
+
+  const isCourseUnlocked = (course: Course): boolean => {
+    if (course.access_type === 'free') return true;
+    if (course.creator_id === currentUser.id) return true;
+    if (enrolledCourseIds.includes(course.id)) return true;
+    if (course.access_type === 'supporter_only' && (currentUser.tier === 'supporter' || currentUser.tier === 'vip')) {
+      return true;
+    }
+    return false;
+  };
+
+  const enrollCourse = (courseId: string): boolean => {
+    const course = courses.find(c => c.id === courseId);
+    if (!course) return false;
+
+    if (isCourseUnlocked(course)) {
+      if (!enrolledCourseIds.includes(courseId)) {
+        setEnrolledCourseIds(prev => [...prev, courseId]);
+      }
+      return true;
+    }
+
+    // If one_time purchase with Rain Drops
+    const costDrops = Math.round(course.price * 100);
+    if (momentsBalance < costDrops) {
+      setIsTopUpModalOpen(true);
+      return false;
+    }
+
+    // Deduct drops
+    setMomentsBalance(prev => Math.max(0, prev - costDrops));
+    setEnrolledCourseIds(prev => [...prev, courseId]);
+
+    // Record Transaction
+    const newTx: MomentsTransaction = {
+      id: `tx_${Date.now()}_course_${course.id}`,
+      user_id: currentUser.id,
+      type: 'course_purchase' as unknown as 'tip_sent',
+      amount: -costDrops,
+      counterparty_name: course.creator?.full_name || 'Course Instructor',
+      reference_title: `Enrolled: ${course.title} (${costDrops} Rain Drops / $${course.price.toFixed(2)})`,
+      created_at: new Date().toISOString(),
+      status: 'completed',
+      test_mode: false,
+      tx_hash: `0x${Math.random().toString(16).substring(2, 12)}`,
+      net_usd: course.price
+    };
+    setTransactions(prev => [newTx, ...prev]);
+
+    triggerTipAnimation(costDrops, course.title);
+
+    addNotification({
+      type: 'mention',
+      actor: {
+        id: course.creator_id,
+        username: course.creator?.username || 'instructor',
+        full_name: course.creator?.full_name || 'Instructor',
+        avatar_url: course.creator?.avatar_url || DEFAULT_AVATAR
+      },
+      title: 'Enrolled in Course 🎓',
+      description: `Welcome to ${course.title}! Your learning dashboard is now unlocked.`,
+      target_id: course.id,
+      target_route: `learn/${course.id}`,
+      is_read: false
+    });
+
+    return true;
+  };
+
+  const toggleLessonCompletion = (lessonId: string) => {
+    setCompletedLessonIds(prev =>
+      prev.includes(lessonId) ? prev.filter(id => id !== lessonId) : [...prev, lessonId]
+    );
+  };
+
+  const isLessonCompleted = (lessonId: string) => completedLessonIds.includes(lessonId);
+
+  const createCourse = (courseData: Omit<Course, 'id' | 'created_at'>): Course => {
+    if (courseData.category) {
+      addCourseCategory({ name: courseData.category });
+    }
+
+    const newCourse: Course = {
+      ...courseData,
+      id: `course_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      creator_id: currentUser.id,
+      creator: {
+        id: currentUser.id,
+        username: currentUser.username,
+        full_name: currentUser.full_name,
+        avatar_url: currentUser.avatar_url,
+        badge: currentUser.badge || 'Permaculture Educator'
+      },
+      enrolled_count: 0,
+      created_at: new Date().toISOString()
+    };
+
+    setCourses(prev => [newCourse, ...prev]);
+    return newCourse;
+  };
+
+  const updateCourse = (courseId: string, updates: Partial<Course>) => {
+    if (updates.category) {
+      addCourseCategory({ name: updates.category });
+    }
+    setCourses(prev =>
+      prev.map(c => (c.id === courseId ? { ...c, ...updates, updated_at: new Date().toISOString() } : c))
+    );
+  };
+
+  const deleteCourse = (courseId: string) => {
+    setCourses(prev => prev.filter(c => c.id !== courseId));
+  };
+
+  // --- Course Reviews State & LMS Handlers ---
+  const [courseReviews, setCourseReviews] = useState<CourseReview[]>(() => {
+    try {
+      const saved = localStorage.getItem('perma_course_reviews_v1');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return SEED_COURSE_REVIEWS;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('perma_course_reviews_v1', JSON.stringify(courseReviews));
+    } catch {}
+  }, [courseReviews]);
+
+  const isCourseFinishedByStudent = (courseId: string): boolean => {
+    const course = courses.find(c => c.id === courseId);
+    if (!course) return false;
+    let totalLessonsCount = 0;
+    let completedCount = 0;
+    course.sections.forEach(sec => {
+      sec.lessons.forEach(l => {
+        totalLessonsCount++;
+        if (completedLessonIds.includes(l.id)) {
+          completedCount++;
+        }
+      });
+    });
+    return totalLessonsCount > 0 && completedCount >= totalLessonsCount;
+  };
+
+  const getCourseReviews = (courseId: string): CourseReview[] => {
+    return courseReviews.filter(r => r.course_id === courseId);
+  };
+
+  const addCourseReview = (reviewData: {
+    course_id: string;
+    rating: number;
+    title?: string;
+    comment: string;
+  }): CourseReview => {
+    const isVerified = isCourseFinishedByStudent(reviewData.course_id);
+    const newReview: CourseReview = {
+      id: `rev_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      course_id: reviewData.course_id,
+      user_id: currentUser.id,
+      user: {
+        id: currentUser.id,
+        username: currentUser.username,
+        full_name: currentUser.full_name,
+        avatar_url: currentUser.avatar_url || DEFAULT_AVATAR,
+        badge: currentUser.badge || 'Verified Student'
+      },
+      rating: Math.max(1, Math.min(5, reviewData.rating)),
+      title: reviewData.title?.trim() || undefined,
+      comment: reviewData.comment.trim(),
+      is_verified_completion: isVerified,
+      helpful_count: 0,
+      created_at: new Date().toISOString()
+    };
+
+    setCourseReviews(prev => [newReview, ...prev]);
+
+    // Send notification to course creator
+    const targetCourse = courses.find(c => c.id === reviewData.course_id);
+    if (targetCourse && targetCourse.creator_id !== currentUser.id) {
+      addNotification({
+        type: 'comment',
+        actor: {
+          id: currentUser.id,
+          username: currentUser.username,
+          full_name: currentUser.full_name,
+          avatar_url: currentUser.avatar_url || DEFAULT_AVATAR,
+          badge: currentUser.badge
+        },
+        title: 'New Student Course Review ⭐',
+        description: `${currentUser.full_name} gave ${reviewData.rating} stars to "${targetCourse.title}"!`,
+        target_id: targetCourse.id,
+        target_route: `learn/${targetCourse.id}`,
+        is_read: false
+      });
+    }
+
+    return newReview;
+  };
+
+  const deleteCourseReview = (reviewId: string) => {
+    setCourseReviews(prev => prev.filter(r => r.id !== reviewId));
+  };
+
+  const likeCourseReview = (reviewId: string) => {
+    setCourseReviews(prev =>
+      prev.map(r => (r.id === reviewId ? { ...r, helpful_count: r.helpful_count + 1 } : r))
+    );
+  };
+
+  // --- Digital Products & Publications State & Handlers ---
+  const [digitalProducts, setDigitalProducts] = useState<DigitalProduct[]>(() => {
+    try {
+      const saved = localStorage.getItem('perma_digital_products_v1');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return SEED_DIGITAL_PRODUCTS;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('perma_digital_products_v1', JSON.stringify(digitalProducts));
+    } catch {}
+  }, [digitalProducts]);
+
+  const [unlockedProductIds, setUnlockedProductIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('perma_unlocked_products');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return ['prod_food_forest_guild_matrix']; // free product unlocked by default
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('perma_unlocked_products', JSON.stringify(unlockedProductIds));
+    } catch {}
+  }, [unlockedProductIds]);
+
+  const isProductUnlocked = (product: DigitalProduct): boolean => {
+    if (product.access_type === 'free') return true;
+    if (product.creator_id === currentUser.id) return true;
+    if (unlockedProductIds.includes(product.id)) return true;
+    if (product.access_type === 'supporter_only' && (currentUser.tier === 'supporter' || currentUser.tier === 'vip')) {
+      return true;
+    }
+    return false;
+  };
+
+  const unlockDigitalProduct = (productId: string): boolean => {
+    const product = digitalProducts.find(p => p.id === productId);
+    if (!product) return false;
+
+    if (isProductUnlocked(product)) {
+      if (!unlockedProductIds.includes(productId)) {
+        setUnlockedProductIds(prev => [...prev, productId]);
+      }
+      return true;
+    }
+
+    // Rain Drops checkout
+    const costDrops = product.raindrop_price || Math.round(product.price * 100);
+    if (momentsBalance < costDrops) {
+      setIsTopUpModalOpen(true);
+      return false;
+    }
+
+    // Deduct drops
+    setMomentsBalance(prev => Math.max(0, prev - costDrops));
+    setUnlockedProductIds(prev => [...prev, productId]);
+
+    // Update download count on product
+    setDigitalProducts(prev =>
+      prev.map(p => (p.id === productId ? { ...p, download_count: (p.download_count || 0) + 1 } : p))
+    );
+
+    // 5% platform fee split calculation
+    const platformFeeDrops = Math.round(costDrops * 0.05);
+    const creatorEarnedDrops = costDrops - platformFeeDrops;
+    const netEarningsUsd = creatorEarnedDrops / 100;
+    const platformFeeUsd = platformFeeDrops / 100;
+
+    // Credit creator if active user is creator
+    if (currentUser.id === product.creator_id) {
+      setEarningsBalanceUsd(prev => Number((prev + netEarningsUsd).toFixed(2)));
+    }
+
+    // Record Transaction
+    const newTx: MomentsTransaction = {
+      id: `tx_${Date.now()}_prod_${product.id}`,
+      user_id: currentUser.id,
+      type: 'course_purchase' as unknown as 'tip_sent',
+      amount: -costDrops,
+      counterparty_name: product.creator?.full_name || 'Author / Educator',
+      reference_title: `Unlocked Download: ${product.title} (${costDrops} Rain Drops / $${product.price.toFixed(2)})`,
+      created_at: new Date().toISOString(),
+      status: 'completed',
+      test_mode: false,
+      tx_hash: `0x${Math.random().toString(16).substring(2, 12)}`,
+      fee_amount: platformFeeUsd,
+      net_usd: netEarningsUsd
+    };
+    setTransactions(prev => [newTx, ...prev]);
+
+    triggerTipAnimation(costDrops, product.title);
+
+    addNotification({
+      type: 'mention',
+      actor: {
+        id: product.creator_id,
+        username: product.creator?.username || 'author',
+        full_name: product.creator?.full_name || 'Author',
+        avatar_url: product.creator?.avatar_url || DEFAULT_AVATAR
+      },
+      title: 'Digital Publication Unlocked 📖',
+      description: `You now have permanent download access to ${product.title}.`,
+      target_id: product.id,
+      target_route: 'learn',
+      is_read: false
+    });
+
+    return true;
+  };
+
+  const publishDigitalProduct = (productData: Omit<DigitalProduct, 'id' | 'created_at'>): DigitalProduct => {
+    if (productData.category) {
+      addCourseCategory({ name: productData.category });
+    }
+
+    const calculatedPrice = productData.price || 0;
+    const calculatedDrops = productData.raindrop_price || Math.round(calculatedPrice * 100);
+
+    const newProduct: DigitalProduct = {
+      ...productData,
+      id: `prod_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      creator_id: currentUser.id,
+      creator: {
+        id: currentUser.id,
+        username: currentUser.username,
+        full_name: currentUser.full_name,
+        avatar_url: currentUser.avatar_url,
+        badge: currentUser.badge || 'Permaculture Author'
+      },
+      price: calculatedPrice,
+      raindrop_price: calculatedDrops,
+      download_count: 0,
+      rating: 5.0,
+      reviews_count: 0,
+      created_at: new Date().toISOString()
+    };
+
+    setDigitalProducts(prev => [newProduct, ...prev]);
+    // Automatically unlock for author
+    setUnlockedProductIds(prev => (prev.includes(newProduct.id) ? prev : [...prev, newProduct.id]));
+
+    return newProduct;
   };
 
   return (
@@ -2223,8 +2957,6 @@ export const PermacultureProvider: React.FC<{ children: React.ReactNode }> = ({ 
         followedCreatorIds,
         toggleFollowCreator,
         isFollowingCreator,
-        isFiresideAudioPlaying,
-        toggleFiresideAudio,
         theme,
         toggleTheme,
         isLoggedIn,
@@ -2247,13 +2979,37 @@ export const PermacultureProvider: React.FC<{ children: React.ReactNode }> = ({ 
         deleteComment,
         getCommentsForPost,
         tipComment,
+        interceptTipDonation,
         notifications,
         unreadNotificationCount,
         addNotification,
         markNotificationAsRead,
         markAllNotificationsAsRead,
         clearNotification,
-        createChannel
+        createChannel,
+        courses,
+        createCourse,
+        updateCourse,
+        deleteCourse,
+        courseCategories,
+        addCourseCategory,
+        enrolledCourseIds,
+        enrollCourse,
+        completedLessonIds,
+        toggleLessonCompletion,
+        isLessonCompleted,
+        isCourseUnlocked,
+        courseReviews,
+        addCourseReview,
+        deleteCourseReview,
+        likeCourseReview,
+        getCourseReviews,
+        isCourseFinishedByStudent,
+        digitalProducts,
+        unlockedProductIds,
+        isProductUnlocked,
+        unlockDigitalProduct,
+        publishDigitalProduct
       }}
     >
       {children}

@@ -45,7 +45,7 @@ export const SqlSchemaModal: React.FC = () => {
                 </span>
               </div>
               <p className="text-xs text-stone-500 dark:text-stone-400">
-                Tables: profiles, bush_tv_channels, messages, posts, moments_transactions, channel_memberships with RLS.
+                Tables: profiles, bush_tv_channels, messages, posts, moments_transactions, courses, course_sections, course_lessons, course_reviews with RLS.
               </p>
             </div>
           </div>

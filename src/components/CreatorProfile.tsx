@@ -43,6 +43,7 @@ import {
   AlertTriangle
 } from 'lucide-react';
 import { usePermaculture } from '../context/PermacultureContext';
+import { useMessenger } from '../context/MessengerContext';
 import { UserProfile, BushTVChannel, CreatorGoal, CreatorMembershipTier, CommunityPost } from '../types';
 import { WaterGrowthOverlay } from './WaterGrowthOverlay';
 import { EditGoalModal } from './EditGoalModal';
@@ -88,6 +89,8 @@ export const CreatorProfile: React.FC<CreatorProfileProps> = ({ username, naviga
     submitReport,
     comments
   } = usePermaculture();
+
+  const { startChatWithUser } = useMessenger();
 
   // Track open comment sections per post
   const [openCommentPostIds, setOpenCommentPostIds] = useState<Set<string>>(new Set());
@@ -727,16 +730,28 @@ export const CreatorProfile: React.FC<CreatorProfileProps> = ({ username, naviga
                     ✓ Your Public Profile
                   </span>
                 ) : (
-                  <button
-                    onClick={() => toggleFollowCreator(profile.id)}
-                    className={`px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer ${
-                      isFollowingCreator(profile.id)
-                        ? 'bg-stone-200 dark:bg-stone-800 text-stone-800 dark:text-stone-300 border border-stone-300 dark:border-stone-700'
-                        : 'bg-emerald-500 hover:bg-emerald-400 text-stone-950 font-bold'
-                    }`}
-                  >
-                    {isFollowingCreator(profile.id) ? '✓ Following Steward' : '+ Follow Steward'}
-                  </button>
+                  <>
+                    <button
+                      onClick={() => toggleFollowCreator(profile.id)}
+                      className={`px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer ${
+                        isFollowingCreator(profile.id)
+                          ? 'bg-stone-200 dark:bg-stone-800 text-stone-800 dark:text-stone-300 border border-stone-300 dark:border-stone-700'
+                          : 'bg-emerald-500 hover:bg-emerald-400 text-stone-950 font-bold'
+                      }`}
+                    >
+                      {isFollowingCreator(profile.id) ? '✓ Following Steward' : '+ Follow Steward'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => startChatWithUser(profile.id)}
+                      className="px-3.5 py-2 rounded-xl border border-emerald-300/80 dark:border-emerald-700/60 bg-emerald-50/80 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-950/70 text-xs font-semibold flex items-center space-x-1.5 transition-colors cursor-pointer shadow-2xs"
+                      title={`Message ${profile.full_name}`}
+                    >
+                      <MessageCircle className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+                      <span>Message</span>
+                    </button>
+                  </>
                 )}
 
                 <button
@@ -1373,7 +1388,7 @@ export const CreatorProfile: React.FC<CreatorProfileProps> = ({ username, naviga
                     return (
                       <article
                         key={post.id}
-                        className="rounded-3xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900/90 p-6 sm:p-7 shadow-xl hover:border-stone-300 dark:hover:border-stone-700/80 transition-all space-y-4"
+                        className="rounded-3xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900/90 p-3.5 sm:p-6 md:p-7 w-full min-w-0 max-w-full overflow-hidden shadow-xl hover:border-stone-300 dark:hover:border-stone-700/80 transition-all space-y-4"
                       >
                         {/* Author Header */}
                         <div className="flex items-start justify-between">
@@ -1592,14 +1607,14 @@ export const CreatorProfile: React.FC<CreatorProfileProps> = ({ username, naviga
                         )}
 
                         {/* Engagement Bar */}
-                        <div className="pt-3 border-t border-stone-200 dark:border-stone-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div className="pt-3 border-t border-stone-200 dark:border-stone-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 min-w-0">
                           {/* Micro tipping */}
-                          <div className="flex items-center space-x-2">
-                            <span className="text-xs text-stone-500 font-medium">Plant the Rain 🌧️:</span>
+                          <div className="flex flex-wrap items-center gap-1.5 sm:space-x-2">
+                            <span className="text-xs text-stone-500 font-medium shrink-0">Plant the Rain 🌧️:</span>
                             <button
                               type="button"
                               onClick={() => handleTipPostWithGrowth(post.id, 20)}
-                              className={`relative overflow-visible px-2 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/80 border border-emerald-500/30 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-xs font-mono font-bold transition-all active:scale-95 cursor-pointer ${
+                              className={`relative overflow-visible px-2 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/80 border border-emerald-500/30 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-xs font-mono font-bold transition-all active:scale-95 cursor-pointer shrink-0 ${
                                 growingPostTipKey === `${post.id}-20` ? 'animate-growth-button-pulse ring-2 ring-emerald-400/80 shadow-md shadow-emerald-500/30' : ''
                               }`}
                               title="Plant 20 Rain Drops"
@@ -1610,7 +1625,7 @@ export const CreatorProfile: React.FC<CreatorProfileProps> = ({ username, naviga
                             <button
                               type="button"
                               onClick={() => handleTipPostWithGrowth(post.id, 60)}
-                              className={`relative overflow-visible px-2 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/80 border border-emerald-500/30 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-xs font-mono font-bold transition-all active:scale-95 cursor-pointer ${
+                              className={`relative overflow-visible px-2 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/80 border border-emerald-500/30 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-xs font-mono font-bold transition-all active:scale-95 cursor-pointer shrink-0 ${
                                 growingPostTipKey === `${post.id}-60` ? 'animate-growth-button-pulse ring-2 ring-emerald-400/80 shadow-md shadow-emerald-500/30' : ''
                               }`}
                               title="Plant 60 Rain Drops"
@@ -1621,7 +1636,7 @@ export const CreatorProfile: React.FC<CreatorProfileProps> = ({ username, naviga
                             <button
                               type="button"
                               onClick={() => handleTipPostWithGrowth(post.id, 500)}
-                              className={`relative overflow-visible px-2 py-0.5 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-800 dark:text-amber-300 hover:bg-amber-500/25 text-xs font-mono font-bold transition-all active:scale-95 cursor-pointer ${
+                              className={`relative overflow-visible px-2 py-0.5 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-800 dark:text-amber-300 hover:bg-amber-500/25 text-xs font-mono font-bold transition-all active:scale-95 cursor-pointer shrink-0 ${
                                 growingPostTipKey === `${post.id}-500` ? 'animate-growth-button-pulse ring-2 ring-amber-400/80 shadow-md shadow-amber-500/30' : ''
                               }`}
                               title="Plant 1 Water Bucket (500 Rain Drops)"
@@ -1633,7 +1648,7 @@ export const CreatorProfile: React.FC<CreatorProfileProps> = ({ username, naviga
                             <button
                               type="button"
                               onClick={() => setSelectedPostForTip(post)}
-                              className="px-2 py-0.5 rounded-lg text-cyan-600 dark:text-cyan-400 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-xs font-mono font-bold transition-all active:scale-95 flex items-center space-x-1 cursor-pointer shadow-xs"
+                              className="px-2 py-0.5 rounded-lg text-cyan-600 dark:text-cyan-400 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-xs font-mono font-bold transition-all active:scale-95 flex items-center space-x-1 cursor-pointer shadow-xs shrink-0"
                               title="Open tip dialog for this post"
                             >
                               <span>💧</span>
@@ -1642,15 +1657,15 @@ export const CreatorProfile: React.FC<CreatorProfileProps> = ({ username, naviga
                             </button>
                           </div>
 
-                          <div className="flex items-center space-x-3 text-xs">
-                            <div className="flex items-center space-x-1 text-cyan-600 dark:text-cyan-400 font-mono font-bold">
+                          <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs">
+                            <div className="flex items-center space-x-1 text-cyan-600 dark:text-cyan-400 font-mono font-bold shrink-0">
                               <span>💧</span>
                               <span>{((post.totalReceivedDrops ?? post.moments_harvested) || 0).toLocaleString()}</span>
                             </div>
 
                             <button
                               onClick={() => likePost(post.id)}
-                              className="flex items-center space-x-1 text-stone-500 hover:text-amber-500 transition-colors cursor-pointer"
+                              className="flex items-center space-x-1 text-stone-500 hover:text-amber-500 transition-colors cursor-pointer shrink-0"
                             >
                               <Heart className="h-4 w-4" />
                               <span>{post.likes_count}</span>
@@ -1659,7 +1674,7 @@ export const CreatorProfile: React.FC<CreatorProfileProps> = ({ username, naviga
                             <button
                               type="button"
                               onClick={() => toggleComments(post.id)}
-                              className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                              className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-xl text-xs font-semibold transition-all cursor-pointer shrink-0 ${
                                 openCommentPostIds.has(post.id)
                                   ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border border-emerald-500/40 shadow-sm'
                                   : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-neutral-800/80'
@@ -1670,16 +1685,18 @@ export const CreatorProfile: React.FC<CreatorProfileProps> = ({ username, naviga
                               <span>💬 Comments ({comments.filter(c => c.post_id === post.id).length || post.comments_count || 0})</span>
                             </button>
                           </div>
+                        </div>
 
-                          {/* Expandable Comment & Nested Reply System */}
-                          {openCommentPostIds.has(post.id) && (
+                        {/* Expandable Comment & Nested Reply System - Full width on laptop & mobile */}
+                        {openCommentPostIds.has(post.id) && (
+                          <div className="w-full min-w-0 max-w-full overflow-hidden mt-2 pt-1 animate-in fade-in duration-200">
                             <CommentSection
                               targetId={post.id}
                               targetType="post"
                               targetAuthorUsername={post.author.username}
                             />
-                          )}
-                        </div>
+                          </div>
+                        )}
                       </article>
                     );
                   })}

@@ -4,7 +4,8 @@
  * and exportable production SQL migration schema.
  */
 
-import { BushTVChannel, ChatMessage, CommunityPost, MomentsTransaction, UserProfile } from '../types';
+import { BushTVChannel, ChatMessage, CommunityPost, MomentsTransaction, UserProfile, Course, CourseReview, DigitalProduct } from '../types';
+import { DAN_BOT_PROFILE } from '../services/danService';
 
 export const SUPABASE_SCHEMA_SQL = `-- ====================================================================
 -- Permaculture App (permacultureapp.com / App The Moment)
@@ -102,15 +103,87 @@ create table if not exists public.channel_memberships (
   unique(user_id, channel_id)
 );
 
+-- 7. Courses Table (Marketplace & LMS courses)
+create table if not exists public.courses (
+  id uuid primary key default gen_random_uuid(),
+  title text not null,
+  description text not null,
+  creator_id uuid references public.profiles(id) on delete cascade not null,
+  category text not null check (category in ('Composting', 'Water Harvesting', 'Food Forests', 'Soil Biology')),
+  price numeric(10, 2) default 0.00,
+  access_type text not null check (access_type in ('one_time', 'supporter_only', 'free')),
+  is_published boolean default false,
+  thumbnail_url text,
+  enrolled_count integer default 0,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 8. Course Sections Table
+create table if not exists public.course_sections (
+  id uuid primary key default gen_random_uuid(),
+  course_id uuid references public.courses(id) on delete cascade not null,
+  title text not null,
+  order_index integer default 0,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 9. Course Lessons Table
+create table if not exists public.course_lessons (
+  id uuid primary key default gen_random_uuid(),
+  section_id uuid references public.course_sections(id) on delete cascade not null,
+  title text not null,
+  order_index integer default 0,
+  iframe_video_url text,
+  content_text text,
+  pdf_urls text[] default array[]::text[],
+  image_urls text[] default array[]::text[],
+  is_free_preview boolean default false,
+  duration_minutes integer,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 10. Course Enrollments & Progress Table
+create table if not exists public.course_enrollments (
+  id uuid primary key default gen_random_uuid(),
+  course_id uuid references public.courses(id) on delete cascade not null,
+  user_id uuid references public.profiles(id) on delete cascade not null,
+  enrolled_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  completed_at timestamp with time zone,
+  unique(course_id, user_id)
+);
+
+-- 11. Course Reviews Table (Student ratings & reviews for finished courses)
+create table if not exists public.course_reviews (
+  id uuid primary key default gen_random_uuid(),
+  course_id uuid references public.courses(id) on delete cascade not null,
+  user_id uuid references public.profiles(id) on delete cascade not null,
+  rating integer not null check (rating >= 1 and rating <= 5),
+  title text,
+  comment text not null,
+  is_verified_completion boolean default false,
+  helpful_count integer default 0,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  unique(course_id, user_id)
+);
+
 -- Indexes for performance
 create index if not exists idx_messages_channel on public.messages (channel_id, created_at desc);
 create index if not exists idx_posts_created on public.posts (created_at desc);
 create index if not exists idx_transactions_user on public.moments_transactions (user_id, created_at desc);
+create index if not exists idx_courses_creator on public.courses (creator_id);
+create index if not exists idx_course_sections_course on public.course_sections (course_id, order_index asc);
+create index if not exists idx_course_lessons_section on public.course_lessons (section_id, order_index asc);
+create index if not exists idx_course_reviews_course on public.course_reviews (course_id, created_at desc);
+create index if not exists idx_course_enrollments_user on public.course_enrollments (user_id);
 
--- Realtime Publication for Bush TV chat
+-- Realtime Publication for Bush TV chat & Course Reviews
 alter publication supabase_realtime add table public.messages;
 alter publication supabase_realtime add table public.bush_tv_channels;
 alter publication supabase_realtime add table public.moments_transactions;
+alter publication supabase_realtime add table public.courses;
+alter publication supabase_realtime add table public.course_reviews;
 
 -- Row Level Security (RLS) policies
 alter table public.profiles enable row level security;
@@ -118,12 +191,30 @@ alter table public.bush_tv_channels enable row level security;
 alter table public.messages enable row level security;
 alter table public.posts enable row level security;
 alter table public.moments_transactions enable row level security;
+alter table public.courses enable row level security;
+alter table public.course_sections enable row level security;
+alter table public.course_lessons enable row level security;
+alter table public.course_enrollments enable row level security;
+alter table public.course_reviews enable row level security;
 
 create policy "Public read profiles" on public.profiles for select using (true);
 create policy "Public read channels" on public.bush_tv_channels for select using (true);
 create policy "Public read messages" on public.messages for select using (true);
 create policy "Public read posts" on public.posts for select using (true);
 create policy "Users read own transactions" on public.moments_transactions for select using (auth.uid() = user_id);
+
+-- Course RLS Policies
+create policy "Public read published courses" on public.courses for select using (is_published = true or auth.uid() = creator_id);
+create policy "Creators manage own courses" on public.courses for all using (auth.uid() = creator_id);
+create policy "Public read course sections" on public.course_sections for select using (true);
+create policy "Public read course lessons" on public.course_lessons for select using (true);
+create policy "Users read own course enrollments" on public.course_enrollments for select using (auth.uid() = user_id);
+
+-- Course Reviews RLS Policies: Public read, verified/enrolled students can insert/manage
+create policy "Public read course reviews" on public.course_reviews for select using (true);
+create policy "Authenticated users insert own review" on public.course_reviews for insert with check (auth.uid() = user_id);
+create policy "Users update own review" on public.course_reviews for update using (auth.uid() = user_id);
+create policy "Users delete own review" on public.course_reviews for delete using (auth.uid() = user_id);
 `;
 
 // Default Seed Profiles
@@ -483,7 +574,8 @@ export const SEED_PROFILES: UserProfile[] = [
         perks: ['Open-source CAD plumbing blueprints', 'Direct Q&A in #offgrid-tech Bush TV room', 'Thermal mass dimension formulas']
       }
     ]
-  }
+  },
+  DAN_BOT_PROFILE
 ];
 
 // Initial Bush TV Channels
@@ -973,3 +1065,585 @@ export const TOP_UP_PACKAGES = [
     popular: false
   }
 ];
+
+export const SEED_COURSES: Course[] = [
+  {
+    id: 'course_water_keyline',
+    title: 'Keyline Water Harvesting & Contour Swale Mastery',
+    description: 'Learn how to survey keyline contours, design level sill spillways, calculate 100-year flood discharge, and recharge subsoil aquifers with zero synthetic energy.',
+    creator_id: 'user_geoff',
+    creator: {
+      id: 'user_geoff',
+      username: 'geoff_lawton',
+      full_name: 'Geoff Lawton',
+      avatar_url: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=300&q=80',
+      badge: 'Greening the Desert'
+    },
+    category: 'Water Harvesting',
+    price: 25.0,
+    access_type: 'one_time',
+    is_published: true,
+    thumbnail_url: '/src/assets/images/hero_keyline_water_harvest_1792051975745.jpg',
+    enrolled_count: 342,
+    created_at: new Date(Date.now() - 86400000 * 12).toISOString(),
+    sections: [
+      {
+        id: 'sec_1_wh',
+        course_id: 'course_water_keyline',
+        title: 'Section 1: Reading Landscape & Topography',
+        order_index: 0,
+        lessons: [
+          {
+            id: 'les_1_1',
+            section_id: 'sec_1_wh',
+            title: 'Welcome & The Primary Hydrologic Cycle',
+            order_index: 0,
+            iframe_video_url: 'https://www.youtube.com/embed/8gPNz6Uky4w',
+            content_text: 'Welcome to this foundational course on regenerative water harvesting. We start by observing valley geometries, keypoints, and how ridge contouring can redistribute storm runoff to dry arid spurs.',
+            pdf_urls: ['https://example.com/docs/keyline-scale-of-permanence.pdf'],
+            image_urls: [
+              'https://images.unsplash.com/photo-1500651230702-0e2d8a49d4ad?auto=format&fit=crop&w=800&q=80',
+              'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=800&q=80'
+            ],
+            is_free_preview: true,
+            duration_minutes: 18
+          },
+          {
+            id: 'les_1_2',
+            section_id: 'sec_1_wh',
+            title: 'A-Frame & Bunyip Water Level Calibration',
+            order_index: 1,
+            iframe_video_url: 'https://www.youtube.com/embed/qZ2gGg4p5-0',
+            content_text: 'Building reliable off-grid leveling tools using basic timber and vinyl tubing filled with water. We demonstrate step-by-step pegging across a 5% slope.',
+            pdf_urls: ['https://example.com/docs/bunyip-level-blueprints.pdf'],
+            image_urls: [],
+            is_free_preview: false,
+            duration_minutes: 24
+          }
+        ]
+      },
+      {
+        id: 'sec_2_wh',
+        course_id: 'course_water_keyline',
+        title: 'Section 2: Swale Excavation & Level Sill Spillways',
+        order_index: 1,
+        lessons: [
+          {
+            id: 'les_2_1',
+            section_id: 'sec_2_wh',
+            title: 'Sizing the Swale Trench for Cloudburst Events',
+            order_index: 0,
+            iframe_video_url: 'https://www.youtube.com/embed/Hq_qV_tB8eQ',
+            content_text: 'Calculating catchment volume, soil infiltration rate, and designing berm widths. Learn why level sills prevent catastrophic breaches during monsoon downpours.',
+            pdf_urls: ['https://example.com/docs/swale-discharge-calculators.pdf'],
+            image_urls: [
+              'https://images.unsplash.com/photo-1492496913980-501348b61469?auto=format&fit=crop&w=800&q=80'
+            ],
+            is_free_preview: false,
+            duration_minutes: 32
+          },
+          {
+            id: 'les_2_2',
+            section_id: 'sec_2_wh',
+            title: 'Deep Mulch Berm Planting & Vetiver Stabilization',
+            order_index: 1,
+            iframe_video_url: '',
+            content_text: 'Protecting the fresh uncompacted mound with dense carbonaceous woodchips, comfrey crowns, and vetiver grass to weave a living tensile root barrier.',
+            pdf_urls: [],
+            image_urls: [],
+            is_free_preview: false,
+            duration_minutes: 15
+          }
+        ]
+      }
+    ]
+  },
+  {
+    id: 'course_soil_biology',
+    title: 'Living Soil Food Web & Aerated Compost Teas',
+    description: 'Transform depleted dust into biologically vibrant, fungally-dominated humus using microscope bioassays, inoculants, and cold-brewed extracts.',
+    creator_id: 'user_elena',
+    creator: {
+      id: 'user_elena',
+      username: 'elena_perma',
+      full_name: 'Dr. Elena Rostova',
+      avatar_url: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80',
+      badge: 'Soil Microbiologist'
+    },
+    category: 'Soil Biology',
+    price: 15.0,
+    access_type: 'supporter_only',
+    is_published: true,
+    thumbnail_url: '/src/assets/images/course_soil_microbiology_1792051976590.jpg',
+    enrolled_count: 512,
+    created_at: new Date(Date.now() - 86400000 * 20).toISOString(),
+    sections: [
+      {
+        id: 'sec_1_soil',
+        course_id: 'course_soil_biology',
+        title: 'Section 1: The Soil Ecosystem Under 400x Magnification',
+        order_index: 0,
+        lessons: [
+          {
+            id: 'les_soil_1',
+            section_id: 'sec_1_soil',
+            title: 'Identifying Beneficial Nematodes vs Bacterial Feeders',
+            order_index: 0,
+            iframe_video_url: 'https://www.youtube.com/embed/nvAoZ14w7wg',
+            content_text: 'Learn how to calibrate your field compound microscope to count testate amoebae, flagellates, and fungal hyphae diameter (F:B ratio).',
+            pdf_urls: ['https://example.com/docs/soil-food-web-identification-guide.pdf'],
+            image_urls: [
+              'https://images.unsplash.com/photo-1464226184884-fa280b87c399?auto=format&fit=crop&w=800&q=80'
+            ],
+            is_free_preview: true,
+            duration_minutes: 20
+          },
+          {
+            id: 'les_soil_2',
+            section_id: 'sec_1_soil',
+            title: 'Fungal Dominance in Orchard & Tree Guild Soils',
+            order_index: 1,
+            iframe_video_url: 'https://www.youtube.com/embed/uUmIdqK0Wq0',
+            content_text: 'Perennial systems require a 5:1 fungal to bacterial biomass ratio. We demonstrate brewing woodchip extracts with kelp meal and humic acids.',
+            pdf_urls: ['https://example.com/docs/fungal-tea-recipes.pdf'],
+            image_urls: [],
+            is_free_preview: false,
+            duration_minutes: 28
+          }
+        ]
+      }
+    ]
+  },
+  {
+    id: 'course_compost_thermal',
+    title: 'Masterclass in Thermal Bioreactor Composting',
+    description: 'Hot thermal composting that reaches 65°C within 48 hours to destroy weed seeds, denature weed pathogens, and generate odorless black gold.',
+    creator_id: 'user_morag',
+    creator: {
+      id: 'user_morag',
+      username: 'morag_gamble',
+      full_name: 'Morag Gamble',
+      avatar_url: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=300&q=80',
+      badge: 'Master Teacher'
+    },
+    category: 'Composting',
+    price: 0,
+    access_type: 'free',
+    is_published: true,
+    thumbnail_url: 'https://images.unsplash.com/photo-1592417817098-8f3d6910a45e?auto=format&fit=crop&w=1200&q=80',
+    enrolled_count: 1289,
+    created_at: new Date(Date.now() - 86400000 * 30).toISOString(),
+    sections: [
+      {
+        id: 'sec_1_compost',
+        course_id: 'course_compost_thermal',
+        title: 'Section 1: Carbon to Nitrogen Balancing',
+        order_index: 0,
+        lessons: [
+          {
+            id: 'les_comp_1',
+            section_id: 'sec_1_compost',
+            title: 'The 30:1 C:N Ratio Formula Explained',
+            order_index: 0,
+            iframe_video_url: 'https://www.youtube.com/embed/bZ97P2Vv2qY',
+            content_text: 'Demystifying greens vs browns. How moisture levels (50% squeeze test) and oxygen pore channels drive thermophilic actinobacteria.',
+            pdf_urls: ['https://example.com/docs/compost-cn-table.pdf'],
+            image_urls: [
+              'https://images.unsplash.com/photo-1592417817098-8f3d6910a45e?auto=format&fit=crop&w=800&q=80'
+            ],
+            is_free_preview: true,
+            duration_minutes: 15
+          },
+          {
+            id: 'les_comp_2',
+            section_id: 'sec_1_compost',
+            title: 'The Berkeley 18-Day Rapid Pile Method',
+            order_index: 1,
+            iframe_video_url: 'https://www.youtube.com/embed/n9Z7E2vX9X0',
+            content_text: 'Turn on Day 4, Day 6, Day 8, Day 10, Day 12, Day 14. Watch the core heat spike and settle into sweet forest-smelling compost.',
+            pdf_urls: [],
+            image_urls: [],
+            is_free_preview: true,
+            duration_minutes: 22
+          }
+        ]
+      }
+    ]
+  },
+  {
+    id: 'course_food_forests',
+    title: 'Subtropical Food Forest Guild Architecture',
+    description: 'Design self-fertilizing 7-layer food forests with nitrogen fixers, dynamic nutrient accumulators, aromatic pest confusers, and canopy climbers.',
+    creator_id: 'user_willow',
+    creator: {
+      id: 'user_willow',
+      username: 'willow_permaculture',
+      full_name: 'Willow & Oak Homestead',
+      avatar_url: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=300&q=80',
+      badge: 'Zone 1 Specialist'
+    },
+    category: 'Food Forests',
+    price: 20.0,
+    access_type: 'one_time',
+    is_published: true,
+    thumbnail_url: '/src/assets/images/hero_food_forest_canopy_1792051977298.jpg',
+    enrolled_count: 420,
+    created_at: new Date(Date.now() - 86400000 * 5).toISOString(),
+    sections: [
+      {
+        id: 'sec_1_ff',
+        course_id: 'course_food_forests',
+        title: 'Section 1: The 7 Layers of Multi-Strata Design',
+        order_index: 0,
+        lessons: [
+          {
+            id: 'les_ff_1',
+            section_id: 'sec_1_ff',
+            title: 'Overstory to Rhizosphere: Layering Light & Roots',
+            order_index: 0,
+            iframe_video_url: 'https://www.youtube.com/embed/p1Q4yE7cQpA',
+            content_text: 'Canopy (Chestnut/Pecan), Understory (Figs/Apples), Shrub (Berries), Herbaceous (Comfrey/Fennel), Rhizosphere (Horseradish), Groundcover (Clover), and Vine (Passionfruit/Kiwi).',
+            pdf_urls: ['https://example.com/docs/7-layer-species-matrix.pdf'],
+            image_urls: [
+              'https://images.unsplash.com/photo-1518531933037-91b2f5f229cc?auto=format&fit=crop&w=800&q=80'
+            ],
+            is_free_preview: true,
+            duration_minutes: 25
+          },
+          {
+            id: 'les_ff_2',
+            section_id: 'sec_1_ff',
+            title: 'Chop-and-Drop Nitrogen Cycling with Pigeon Pea & Tagasaste',
+            order_index: 1,
+            iframe_video_url: '',
+            content_text: 'Accelerating soil development by slashing pioneer legumes three times annually right before seed set to mulch the fruit trees.',
+            pdf_urls: [],
+            image_urls: [],
+            is_free_preview: false,
+            duration_minutes: 19
+          }
+        ]
+      }
+    ]
+  }
+];
+
+// Seed Course Reviews
+export const SEED_COURSE_REVIEWS: CourseReview[] = [
+  {
+    id: 'rev_1_keyline',
+    course_id: 'course_water_keyline',
+    user_id: 'user_danou',
+    user: {
+      id: 'user_danou',
+      username: 'danou_van_rensburg',
+      full_name: 'Danou van Rensburg',
+      avatar_url: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=300&q=80',
+      badge: 'TIME KEEPER'
+    },
+    rating: 5,
+    title: 'Transformed our slope into a living water reservoir',
+    comment: 'After finishing every lesson in this course, I calibrated our bunyip level and marked out the keypoint lines across our arid ridges. The section on level sill spillways is indispensable—we had zero erosion during our first heavy 60mm thunderstorm!',
+    is_verified_completion: true,
+    helpful_count: 14,
+    created_at: new Date(Date.now() - 86400000 * 6).toISOString()
+  },
+  {
+    id: 'rev_2_keyline',
+    course_id: 'course_water_keyline',
+    user_id: 'user_elena',
+    user: {
+      id: 'user_elena',
+      username: 'elena_perma',
+      full_name: 'Dr. Elena Rostova',
+      avatar_url: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80',
+      badge: 'Soil Microbiologist'
+    },
+    rating: 5,
+    title: 'Hydrologic principles explained with field precision',
+    comment: 'Superb instructional pacing. The scale of permanence and catchment calculation models are spot on. Highly recommended for anyone transitioning broadacre pastures into resilient regenerative systems.',
+    is_verified_completion: true,
+    helpful_count: 8,
+    created_at: new Date(Date.now() - 86400000 * 3).toISOString()
+  },
+  {
+    id: 'rev_3_soil',
+    course_id: 'course_soil_biology',
+    user_id: 'user_willow',
+    user: {
+      id: 'user_willow',
+      username: 'willow_permaculture',
+      full_name: 'Willow & Oak Homestead',
+      avatar_url: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=300&q=80',
+      badge: 'Zone 1 Specialist'
+    },
+    rating: 5,
+    title: 'Microscope bioassays finally made intuitive!',
+    comment: 'Dr. Elena does a masterly job explaining how to identify beneficial nematodes and testate amoebae under 400x magnification. Our orchard tree guilds responded within 2 weeks of spraying fungal-dominant extracts.',
+    is_verified_completion: true,
+    helpful_count: 19,
+    created_at: new Date(Date.now() - 86400000 * 12).toISOString()
+  },
+  {
+    id: 'rev_4_compost',
+    course_id: 'course_compost_thermal',
+    user_id: 'user_danou',
+    user: {
+      id: 'user_danou',
+      username: 'danou_van_rensburg',
+      full_name: 'Danou van Rensburg',
+      avatar_url: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=300&q=80',
+      badge: 'TIME KEEPER'
+    },
+    rating: 5,
+    title: 'The 18-day Berkeley method without weed seed contamination',
+    comment: 'Reached 65°C on day 4 like clockwork! Morag explains the moisture squeeze test and thermal chimney aeration so clearly. Outstanding free resource for the entire permaculture community.',
+    is_verified_completion: true,
+    helpful_count: 27,
+    created_at: new Date(Date.now() - 86400000 * 18).toISOString()
+  },
+  {
+    id: 'rev_5_food_forest',
+    course_id: 'course_food_forests',
+    user_id: 'user_morag',
+    user: {
+      id: 'user_morag',
+      username: 'morag_gamble',
+      full_name: 'Morag Gamble',
+      avatar_url: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=300&q=80',
+      badge: 'Master Teacher'
+    },
+    rating: 5,
+    title: 'Multi-strata guild architectures that work in real life',
+    comment: 'The 7-layer breakdown and pioneer legume chop-and-drop schedule are pure gold. A wonderful curriculum for anyone wanting to plant abundance.',
+    is_verified_completion: true,
+    helpful_count: 11,
+    created_at: new Date(Date.now() - 86400000 * 2).toISOString()
+  }
+];
+
+export const SEED_DIGITAL_PRODUCTS: DigitalProduct[] = [
+  {
+    id: 'prod_soil_microscope_manual',
+    creator_id: 'user_elena',
+    creator: {
+      id: 'user_elena',
+      username: 'elena_biochar',
+      full_name: 'Dr. Elena Rostova',
+      avatar_url: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=300&q=80',
+      badge: 'Soil Microbiologist'
+    },
+    title: 'Soil Food Web Microscope Field Manual',
+    subtitle: 'Identification key for nematodes, amoebae, flagellates, and mycorrhizal fungi',
+    description: 'High-resolution identification microscopy charts, optical slide preparation workflows, and biological biomass calculation worksheets to measure active fungal-to-bacterial ratios in living soils.',
+    product_type: 'field_guide',
+    category: 'Soil Biology',
+    cover_url: 'https://images.unsplash.com/photo-1532094349884-543bc11b234d?auto=format&fit=crop&w=800&q=80',
+    file_url: 'https://example.com/downloads/soil-food-web-microscope-guide.pdf',
+    file_format: 'PDF · 64 Pages (Color Charts)',
+    file_size: '18.5 MB',
+    page_count: 64,
+    access_type: 'one_time',
+    price: 12.00,
+    raindrop_price: 1200,
+    download_count: 342,
+    rating: 4.9,
+    reviews_count: 28,
+    is_published: true,
+    sample_preview_text: 'Chapter 1: Microscope calibration and magnification formulas (400x total). Slide preparation using non-chlorinated well water. Chapter 2: Testate amoebae vs naked amoebae and protozoan mineralization cycles.',
+    table_of_contents: [
+      '1. Calibration & Hemocytometer Slide Prep',
+      '2. Nematode Feeding Habits (Bacterial vs Fungal vs Root Feeders)',
+      '3. Mycelial Diameter Measurements & Active Biomass',
+      '4. Protozoan Counting & Nitrogen Mineralization Tables',
+      '5. Field Troubleshooting: Identifying Anaerobic Ciliates'
+    ],
+    created_at: new Date(Date.now() - 86400000 * 24).toISOString()
+  },
+  {
+    id: 'prod_keyline_engineering_cad',
+    creator_id: 'user_geoff',
+    creator: {
+      id: 'user_geoff',
+      username: 'geoff_lawton',
+      full_name: 'Geoff Lawton',
+      avatar_url: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=300&q=80',
+      badge: 'Master Designer'
+    },
+    title: 'Keyline Water Catchment & Spillway Engineering Blueprints',
+    subtitle: 'Broadacre earthwork schematics, swale contour calculation sheets & lockpipe designs',
+    description: 'The master engineering drawings for hillside keypoint dams, vegetated emergency overflow spillways, contour laser leveling, and siphon gravity-feed manifold plumbing systems.',
+    product_type: 'schematic_blueprint',
+    category: 'Water Harvesting',
+    cover_url: 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=800&q=80',
+    file_url: 'https://example.com/downloads/keyline-earthworks-blueprints.pdf',
+    file_format: 'PDF & Vector CAD · 38 Architectural Plates',
+    file_size: '34.2 MB',
+    page_count: 38,
+    access_type: 'one_time',
+    price: 20.00,
+    raindrop_price: 2000,
+    download_count: 518,
+    rating: 5.0,
+    reviews_count: 46,
+    is_published: true,
+    sample_preview_text: 'Plate 3: Keyline pattern cultivation angles. Determining ridge spine divergences and using chisel plows to direct sheet water from moist valleys onto dry ridges.',
+    table_of_contents: [
+      'Plate 1: Contour Surveying with Laser Receiver Units',
+      'Plate 2: Ridge-to-Valley Flow Vectors & Dam Keying',
+      'Plate 3: Compacted Core Trench & Bentonite Clay Sealing',
+      'Plate 4: Level Sill Spillway Armoring with Earthen Baffles',
+      'Plate 5: Low-Level Outlet Siphon & Poly Manifold Schematics'
+    ],
+    created_at: new Date(Date.now() - 86400000 * 40).toISOString()
+  },
+  {
+    id: 'prod_food_forest_guild_matrix',
+    creator_id: 'user_morag',
+    creator: {
+      id: 'user_morag',
+      username: 'morag_gamble',
+      full_name: 'Morag Gamble',
+      avatar_url: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=300&q=80',
+      badge: 'Master Teacher'
+    },
+    title: 'The Perennial Guild Matrix & Forest Garden Encyclopedia',
+    subtitle: '120 cold, temperate, and subtropical perennial plant polyculture recipes',
+    description: 'Complete companion planting guide mapping the 7 structural canopy layers. Includes root depth compatibility, dynamic nutrient accumulators, pollination insectaries, and harvest calendar schedules.',
+    product_type: 'pdf_book',
+    category: 'Food Forests',
+    cover_url: 'https://images.unsplash.com/photo-1464226184884-fa280b87c399?auto=format&fit=crop&w=800&q=80',
+    file_url: 'https://example.com/downloads/perennial-guild-matrix-encyclopedia.pdf',
+    file_format: 'PDF eBook · 148 Pages',
+    file_size: '22.8 MB',
+    page_count: 148,
+    access_type: 'free',
+    price: 0,
+    raindrop_price: 0,
+    download_count: 2150,
+    rating: 4.9,
+    reviews_count: 114,
+    is_published: true,
+    sample_preview_text: 'Chapter 2: The Multi-Strata Orchard Guild. Underplanting heavy-feeding stone fruits with Russian Comfrey Bocking 14 for potassium cycling and garlic chives for fungal blight suppression.',
+    table_of_contents: [
+      '1. The Seven Strata Architecture of Forest Gardens',
+      '2. Nitrogen-Fixing Pioneer Guilds (Shrubs, Herbaceous, Trees)',
+      '3. Dynamic Nutrient Mining Plants & Taproot Accumulators',
+      '4. Beneficial Insectary Borders & Year-Round Nectar Calendars',
+      '5. Groundcover Living Mulches for Permanent Weed Suppression'
+    ],
+    created_at: new Date(Date.now() - 86400000 * 60).toISOString()
+  },
+  {
+    id: 'prod_wicking_bed_manual',
+    creator_id: 'user_morag',
+    creator: {
+      id: 'user_morag',
+      username: 'morag_gamble',
+      full_name: 'Morag Gamble',
+      avatar_url: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=300&q=80',
+      badge: 'Master Teacher'
+    },
+    title: 'Urban Sub-Irrigated Wicking Bed Construction Manual',
+    subtitle: 'Zero-evaporation self-watering garden beds built from recycled IBC totes and timber',
+    description: 'Save 80% of irrigation water in hot climates. Step-by-step assembly schematics, food-grade geomembrane lining, aggregate gravel selection, slotted drainage pipe setup, and overflow overflow height calculations.',
+    product_type: 'schematic_blueprint',
+    category: 'Urban Permaculture',
+    cover_url: 'https://images.unsplash.com/photo-1585320806297-9794b3e4eeae?auto=format&fit=crop&w=800&q=80',
+    file_url: 'https://example.com/downloads/urban-wicking-bed-construction-manual.pdf',
+    file_format: 'PDF Printable Manual · 28 Pages',
+    file_size: '9.4 MB',
+    page_count: 28,
+    access_type: 'one_time',
+    price: 6.00,
+    raindrop_price: 600,
+    download_count: 412,
+    rating: 4.8,
+    reviews_count: 19,
+    is_published: true,
+    sample_preview_text: 'Section 3: The Capillary Rise Formula. Why soil mix depth must not exceed 300mm above the water reservoir gravel layer to maintain steady capillary wick without root waterlogging.',
+    table_of_contents: [
+      '1. Materials & Food-Grade Liner Safety Standards',
+      '2. Reservoir Aggregate Sizing (Scoria vs Blue Metal vs Pumice)',
+      '3. Slotted Ag-Pipe Inflow Tube & Overflow Valve Setup',
+      '4. High-Humus Soil Sponge Mixture Recipes',
+      '5. Maintenance & Flushing the Bottom Anoxic Silt Layer'
+    ],
+    created_at: new Date(Date.now() - 86400000 * 15).toISOString()
+  },
+  {
+    id: 'prod_grazing_calendar_chart',
+    creator_id: 'user_danou',
+    creator: {
+      id: 'user_danou',
+      username: 'danou_van_rensburg',
+      full_name: 'Danou van Rensburg',
+      avatar_url: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=300&q=80',
+      badge: 'TIME KEEPER'
+    },
+    title: 'Holistic Planned Grazing Paddock Rotation Chart & Daily Monitor',
+    subtitle: 'Seasonal recovery period calculation wheel, forage assessment metric & livestock density tables',
+    description: 'Prevent overgrazing and stimulate perennial grass root depth. Printable laminated paddock tracking wheel and stocking rate calculation worksheets for sheep, cattle, poultry, and goats.',
+    product_type: 'planting_chart',
+    category: 'Animals & Grazing',
+    cover_url: 'https://images.unsplash.com/photo-1484557052118-f32bd25b45b5?auto=format&fit=crop&w=800&q=80',
+    file_url: 'https://example.com/downloads/holistic-grazing-rotation-chart.pdf',
+    file_format: 'High-Res Printable PDF (A3 / Poster Size)',
+    file_size: '12.1 MB',
+    page_count: 14,
+    access_type: 'supporter_only',
+    price: 5.00,
+    raindrop_price: 500,
+    download_count: 265,
+    rating: 4.9,
+    reviews_count: 21,
+    is_published: true,
+    sample_preview_text: 'Chart 1: The Non-Growing Season Recovery Matrix. Determining minimum paddock rest periods (60 to 120 days) based on solar dormancy and soil moisture depletion.',
+    table_of_contents: [
+      'Chart 1: 365-Day Paddock Move Tracking Wheel',
+      'Chart 2: Animal Day per Acre (ADA) Yield Benchmark',
+      'Chart 3: Electric Fence Polywire Layouts & Solar Chargers',
+      'Chart 4: Dung Beetle Activity & Soil Aeration Scorecard'
+    ],
+    created_at: new Date(Date.now() - 86400000 * 8).toISOString()
+  },
+  {
+    id: 'prod_mushroom_inoculation_handbook',
+    creator_id: 'user_elena',
+    creator: {
+      id: 'user_elena',
+      username: 'elena_biochar',
+      full_name: 'Dr. Elena Rostova',
+      avatar_url: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=300&q=80',
+      badge: 'Soil Microbiologist'
+    },
+    title: 'Forest Fungi Cultivation & Hardwood Log Inoculation Manual',
+    subtitle: 'Spawn production, Totem stacking, and outdoor shiitake, oyster & lion’s mane bed recipes',
+    description: 'Grow medicinal and gourmet mushrooms in shaded microclimates and woodland understories. Detailed wood species selection chart, drill bit depth stoppers, cheese wax sealing, and fruiting shock baths.',
+    product_type: 'pdf_book',
+    category: 'Composting',
+    cover_url: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?auto=format&fit=crop&w=800&q=80',
+    file_url: 'https://example.com/downloads/forest-fungi-inoculation-manual.pdf',
+    file_format: 'PDF Handbook · 52 Pages',
+    file_size: '15.6 MB',
+    page_count: 52,
+    access_type: 'one_time',
+    price: 9.00,
+    raindrop_price: 900,
+    download_count: 189,
+    rating: 4.9,
+    reviews_count: 14,
+    is_published: true,
+    sample_preview_text: 'Chapter 3: The Totem Stacking Method for Oyster Mushrooms. Using unseasoned poplar and birch rounds layered with grain spawn and wrapped in breathable moisture sleeves.',
+    table_of_contents: [
+      '1. Timber Selection: Hardwood vs Softwood Phenolics',
+      '2. Inoculation Tools, Plug Spawn vs Sawdust Guns',
+      '3. Log Yard Orientation, Shade Tarps & Drip Sprinklers',
+      '4. Cold Shocking Inoculated Logs for Scheduled Flushes',
+      '5. Spent Substrate Compost Recycling for Soil Health'
+    ],
+    created_at: new Date(Date.now() - 86400000 * 5).toISOString()
+  }
+];
+
+

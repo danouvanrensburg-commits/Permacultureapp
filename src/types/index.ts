@@ -249,6 +249,8 @@ export interface PostComment {
   drops_received?: number;
   total_drops_received?: number;
   totalReceivedDrops?: number;
+  is_tip_comment?: boolean;
+  tip_amount?: number;
 }
 
 export type NotificationType = 'tip' | 'comment' | 'follow' | 'mention';
@@ -271,4 +273,147 @@ export interface PermacultureNotification {
   created_at: string;
   is_read: boolean;
 }
+
+// ==========================================
+// COURSE MARKETPLACE & LMS TYPES
+// ==========================================
+
+export type CourseAccessType = 'one_time' | 'supporter_only' | 'free';
+
+export type CourseCategory =
+  | 'Composting'
+  | 'Water Harvesting'
+  | 'Food Forests'
+  | 'Soil Biology'
+  | 'All'
+  | (string & {});
+
+export interface CourseCategoryMeta {
+  key: string;
+  label: string;
+  icon: string;
+  description: string;
+  isCustom?: boolean;
+  createdBy?: string;
+}
+
+export interface CoursePdfDocument {
+  id: string;
+  name: string;
+  url: string;
+  size?: string;
+  uploaded_at?: string;
+}
+
+export interface CourseLesson {
+  id: string;
+  section_id: string;
+  title: string;
+  order_index: number;
+  iframe_video_url?: string;
+  content_text?: string;
+  pdf_urls?: string[];
+  pdf_documents?: CoursePdfDocument[];
+  image_urls?: string[];
+  is_free_preview: boolean;
+  duration_minutes?: number;
+}
+
+export interface CourseSection {
+  id: string;
+  course_id: string;
+  title: string;
+  order_index: number;
+  lessons: CourseLesson[];
+}
+
+export interface Course {
+  id: string;
+  title: string;
+  description: string;
+  creator_id: string;
+  creator?: {
+    id: string;
+    username: string;
+    full_name: string;
+    avatar_url: string;
+    badge?: string;
+  };
+  category: string;
+  price: number; // In USD ($). Converted to Rain Drops at 100 drops = $1.00
+  access_type: CourseAccessType;
+  is_published: boolean;
+  thumbnail_url: string;
+  overview_pdfs?: CoursePdfDocument[];
+  sections: CourseSection[];
+  enrolled_count?: number;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface CourseReview {
+  id: string;
+  course_id: string;
+  user_id: string;
+  user: {
+    id: string;
+    username: string;
+    full_name: string;
+    avatar_url?: string;
+    badge?: string;
+  };
+  rating: number; // 1 to 5
+  title?: string;
+  comment: string;
+  is_verified_completion: boolean;
+  helpful_count: number;
+  created_at: string;
+  updated_at?: string;
+}
+
+// ==========================================
+// DIGITAL PRODUCTS & PUBLICATIONS
+// ==========================================
+
+export type DigitalProductType =
+  | 'pdf_book'
+  | 'field_guide'
+  | 'schematic_blueprint'
+  | 'planting_chart'
+  | 'cheat_sheet';
+
+export interface DigitalProduct {
+  id: string;
+  creator_id: string;
+  creator?: {
+    id: string;
+    username: string;
+    full_name: string;
+    avatar_url: string;
+    badge?: string;
+  };
+  title: string;
+  subtitle?: string;
+  description: string;
+  product_type: DigitalProductType;
+  category: string;
+  cover_url: string;
+  file_url: string;
+  file_format: string; // e.g., 'PDF (48 pages)', 'PDF & Vector SVG'
+  file_size: string; // e.g., '14.2 MB'
+  page_count?: number;
+  access_type: 'one_time' | 'supporter_only' | 'free';
+  price: number; // in USD
+  raindrop_price: number; // calculated in Rain Drops (e.g. 100 drops = $1.00)
+  download_count: number;
+  rating: number;
+  reviews_count: number;
+  is_published: boolean;
+  sample_preview_text?: string;
+  preview_pages?: string[];
+  table_of_contents?: string[];
+  created_at: string;
+  updated_at?: string;
+}
+
 

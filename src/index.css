@@ -3,11 +3,29 @@
 @variant dark (&:where(.dark, .dark *));
 
 @layer base {
+  :root {
+    --paper-canvas: #FBF9F5;
+    --paper-surface: #F4EFEA;
+    --paper-border: #E7E1D8;
+    --botanical-sage: #2D5A43;
+    --botanical-forest: #193A2B;
+    --charcoal-ink: #1C1917;
+  }
+
   body {
     font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    background-color: #FBF9F5;
+    color: #1C1917;
+    -webkit-font-smoothing: antialiased;
+  }
+  .dark body {
+    background-color: #070B09;
+    color: #F5F5F4;
   }
   h1, h2, h3, h4, h5, h6 {
     font-family: 'Outfit', sans-serif;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
   }
 }
 
@@ -17,20 +35,23 @@
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: rgba(168, 162, 158, 0.15);
+  background: rgba(231, 225, 216, 0.4);
 }
 .dark ::-webkit-scrollbar-track {
   background: rgba(28, 25, 23, 0.4);
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(168, 162, 158, 0.4);
+  background: rgba(168, 162, 158, 0.45);
   border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(45, 90, 67, 0.6);
 }
 .dark ::-webkit-scrollbar-thumb {
   background: rgba(120, 113, 108, 0.35);
   border-radius: 9999px;
 }
-::-webkit-scrollbar-thumb:hover {
+.dark ::-webkit-scrollbar-thumb:hover {
   background: rgba(217, 119, 6, 0.6);
 }
 

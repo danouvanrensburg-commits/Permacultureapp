@@ -38,12 +38,12 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ navigate }) => {
   ];
 
   return (
-    <aside className="w-80 flex-shrink-0 hidden xl:flex flex-col space-y-6 p-4 sticky top-0 h-screen overflow-y-auto scrollbar-none border-l border-[#15221d] bg-[#090d0b] text-stone-200">
+    <aside className="w-80 flex-shrink-0 hidden xl:flex flex-col space-y-6 p-4 sticky top-0 h-screen overflow-y-auto scrollbar-none border-l border-[#E7E1D8] dark:border-[#15221d] bg-[#FAF7F2] dark:bg-[#090d0b] text-stone-900 dark:text-stone-200 transition-colors">
       
       {/* 1. SUGGESTED CREATORS */}
-      <div className="rounded-3xl bg-[#0f1714] border border-[#1b2b24] p-4.5 space-y-4 shadow-xl">
-        <div className="flex items-center space-x-2 text-stone-100 font-bold text-sm">
-          <Users className="h-4 w-4 text-emerald-400" />
+      <div className="rounded-3xl bg-white dark:bg-[#0f1714] border border-[#E7E1D8] dark:border-[#1b2b24] p-4.5 space-y-4 shadow-2xs">
+        <div className="flex items-center space-x-2 text-stone-900 dark:text-stone-100 font-bold text-sm">
+          <Users className="h-4 w-4 text-emerald-700 dark:text-emerald-400" />
           <span>Suggested Creators</span>
         </div>
 
@@ -63,11 +63,11 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ navigate }) => {
                   <img
                     src={creator.avatar_url || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=300&q=80'}
                     alt={creator.full_name}
-                    className="h-10 w-10 rounded-full object-cover ring-1 ring-emerald-500/30 group-hover:ring-emerald-400 transition-all flex-shrink-0"
+                    className="h-10 w-10 rounded-full object-cover ring-1 ring-emerald-600/30 group-hover:ring-emerald-500 transition-all flex-shrink-0"
                   />
                   <div className="truncate">
                     <div className="flex items-center space-x-1.5 truncate">
-                      <span className="font-bold text-xs text-white truncate group-hover:text-emerald-300 transition-colors">
+                      <span className="font-bold text-xs text-stone-900 dark:text-white truncate group-hover:text-emerald-700 dark:group-hover:text-emerald-300 transition-colors">
                         {creator.full_name}
                       </span>
                       {creator.badge && (
@@ -76,7 +76,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ navigate }) => {
                         </span>
                       )}
                     </div>
-                    <p className="text-[11px] text-stone-400 font-mono">
+                    <p className="text-[11px] text-stone-500 dark:text-stone-400 font-mono">
                       {(creator.follower_count || 1200).toLocaleString()} followers
                     </p>
                   </div>
@@ -87,8 +87,8 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ navigate }) => {
                     onClick={() => toggleFollowCreator(creator.id)}
                     className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer ${
                       isFollowing
-                        ? 'bg-[#1b2b24] text-stone-300 border border-stone-600'
-                        : 'bg-[#182620] hover:bg-emerald-500 hover:text-stone-950 text-stone-200 border border-[#243a31]'
+                        ? 'bg-[#F4EFEA] dark:bg-[#1b2b24] text-stone-600 dark:text-stone-300 border border-[#E7E1D8] dark:border-stone-600'
+                        : 'bg-emerald-50 hover:bg-emerald-700 hover:text-white text-emerald-900 dark:bg-[#182620] dark:hover:bg-emerald-500 dark:hover:text-stone-950 dark:text-stone-200 border border-emerald-200 dark:border-[#243a31]'
                     }`}
                   >
                     {isFollowing ? 'Following' : 'Follow'}
@@ -101,12 +101,12 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ navigate }) => {
       </div>
 
       {/* 2. YOUR EARNINGS & WALLETS */}
-      <div className="rounded-3xl bg-[#0f1714] border border-[#1b2b24] p-4.5 space-y-3.5 shadow-xl">
+      <div className="rounded-3xl bg-white dark:bg-[#0f1714] border border-[#E7E1D8] dark:border-[#1b2b24] p-4.5 space-y-3.5 shadow-2xs">
         <div className="flex items-center justify-between">
-          <h3 className="font-bold text-sm text-stone-100">Your Wallets & Earnings</h3>
+          <h3 className="font-bold text-sm text-stone-900 dark:text-stone-100">Your Wallets & Earnings</h3>
           <button
             onClick={() => navigate('dashboard')}
-            className="text-[11px] text-emerald-400 hover:underline font-semibold"
+            className="text-[11px] text-emerald-700 dark:text-emerald-400 hover:underline font-semibold"
           >
             Dashboard →
           </button>
@@ -114,46 +114,46 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ navigate }) => {
 
         <div className="space-y-3 text-xs">
           <div className="flex items-center justify-between">
-            <span className="text-stone-400 flex items-center space-x-2">
-              <DollarSign className="h-4 w-4 text-emerald-400" />
+            <span className="text-stone-500 dark:text-stone-400 flex items-center space-x-2">
+              <DollarSign className="h-4 w-4 text-emerald-700 dark:text-emerald-400" />
               <span>Earnings (USD)</span>
             </span>
             <div className="text-right">
-              <span className="font-mono font-extrabold text-white text-sm">
+              <span className="font-mono font-extrabold text-stone-900 dark:text-white text-sm tabular-nums">
                 ${earningsBalanceUsd.toFixed(2)}
               </span>
               {earningsBalanceUsd >= 100 && (
-                <span className="block text-[9px] text-emerald-400 font-bold">✓ Cash out ready</span>
+                <span className="block text-[9px] text-emerald-700 dark:text-emerald-400 font-bold">✓ Cash out ready</span>
               )}
             </div>
           </div>
 
           <div className="flex items-center justify-between">
-            <span className="text-stone-400 flex items-center space-x-2">
+            <span className="text-stone-500 dark:text-stone-400 flex items-center space-x-2">
               <span className="text-sm">💧</span>
               <span>Rain Drops</span>
             </span>
             <div className="text-right">
-              <span className="font-mono font-extrabold text-white text-sm">
+              <span className="font-mono font-extrabold text-stone-900 dark:text-white text-sm tabular-nums">
                 {waterBalance.toLocaleString()} 💧
               </span>
-              <span className="block text-[10px] text-emerald-400 font-mono">
+              <span className="block text-[10px] text-emerald-700 dark:text-emerald-400 font-mono tabular-nums">
                 {(waterBalance / 500).toFixed(1)} Water Buckets 🪣
               </span>
             </div>
           </div>
 
-          <div className="flex items-center justify-between pt-1 border-t border-[#15221d] text-[11px] text-stone-400">
+          <div className="flex items-center justify-between pt-1 border-t border-[#E7E1D8] dark:border-[#15221d] text-[11px] text-stone-500 dark:text-stone-400">
             <span>Platform fee: 5%</span>
-            <span className="text-emerald-400 font-bold">95% net creator yield</span>
+            <span className="text-emerald-700 dark:text-emerald-400 font-bold">95% net creator yield</span>
           </div>
         </div>
       </div>
 
       {/* 3. TRENDING NOW */}
-      <div className="rounded-3xl bg-[#0f1714] border border-[#1b2b24] p-4.5 space-y-3.5 shadow-xl">
-        <div className="flex items-center space-x-2 text-stone-100 font-bold text-sm">
-          <TrendingUp className="h-4 w-4 text-emerald-400" />
+      <div className="rounded-3xl bg-white dark:bg-[#0f1714] border border-[#E7E1D8] dark:border-[#1b2b24] p-4.5 space-y-3.5 shadow-2xs">
+        <div className="flex items-center space-x-2 text-stone-900 dark:text-stone-100 font-bold text-sm">
+          <TrendingUp className="h-4 w-4 text-emerald-700 dark:text-emerald-400" />
           <span>Trending Now</span>
         </div>
 
@@ -164,7 +164,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ navigate }) => {
               onClick={() => navigate('feed')}
               className="cursor-pointer group flex flex-col"
             >
-              <span className="text-xs font-bold text-stone-200 group-hover:text-emerald-400 transition-colors">
+              <span className="text-xs font-bold text-stone-800 dark:text-stone-200 group-hover:text-emerald-700 dark:group-hover:text-emerald-400 transition-colors">
                 #{t.tag}
               </span>
               <span className="text-[11px] text-stone-500 font-mono">
@@ -176,34 +176,66 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ navigate }) => {
       </div>
 
       {/* 4. BECOME A RAIN MAKER CARD */}
-      <div className="rounded-3xl bg-gradient-to-b from-[#10201a] to-[#0a1410] border border-emerald-500/30 p-4.5 space-y-3 shadow-xl relative overflow-hidden">
-        <div className="flex items-center space-x-2 text-emerald-400 font-extrabold text-sm">
-          <Sparkles className="h-4 w-4 animate-spin-slow" />
+      <div className="rounded-3xl bg-gradient-to-b from-emerald-800 to-emerald-950 border border-emerald-600/30 p-4.5 space-y-3 shadow-md relative overflow-hidden text-white">
+        <div className="flex items-center space-x-2 text-emerald-300 font-extrabold text-sm">
+          <Sparkles className="h-4 w-4" />
           <span>Become a Rain Maker</span>
         </div>
 
-        <p className="text-xs text-stone-300 leading-relaxed">
+        <p className="text-xs text-stone-200 leading-relaxed">
           Start earning from your regenerative content today. $9.90/mo.
         </p>
 
         <div className="flex flex-wrap gap-1.5 pt-1">
-          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#172d24] text-emerald-400 border border-emerald-500/20">
+          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-white/10 text-emerald-200 border border-emerald-400/20">
             Tips
           </span>
-          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#172d24] text-emerald-400 border border-emerald-500/20">
+          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-white/10 text-emerald-200 border border-emerald-400/20">
             Paywalls
           </span>
-          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#172d24] text-emerald-400 border border-emerald-500/20">
+          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-white/10 text-emerald-200 border border-emerald-400/20">
             Referrals
           </span>
         </div>
 
         <button
           onClick={openTopUpModal}
-          className="w-full mt-2 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-stone-950 font-extrabold text-xs shadow-md shadow-emerald-950/40 transition-all cursor-pointer"
+          className="w-full mt-2 py-2.5 rounded-xl bg-white hover:bg-emerald-50 text-emerald-950 font-extrabold text-xs shadow-sm hover:shadow transition-all cursor-pointer"
         >
           Become a Rain Maker
         </button>
+      </div>
+
+      {/* 5. PUBLIC TRUST & COMPLIANCE FOOTER */}
+      <div className="pt-2 text-[11px] text-stone-500 dark:text-stone-400 space-y-1.5 px-1 border-t border-[#E7E1D8] dark:border-[#1b2b24]">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <button
+            type="button"
+            onClick={() => navigate('terms')}
+            className="hover:underline hover:text-stone-800 dark:hover:text-stone-200 cursor-pointer"
+          >
+            Terms of Service
+          </button>
+          <span>·</span>
+          <button
+            type="button"
+            onClick={() => navigate('privacy')}
+            className="hover:underline hover:text-stone-800 dark:hover:text-stone-200 cursor-pointer"
+          >
+            Privacy Policy
+          </button>
+          <span>·</span>
+          <button
+            type="button"
+            onClick={() => navigate('guidelines')}
+            className="hover:underline hover:text-stone-800 dark:hover:text-stone-200 cursor-pointer"
+          >
+            Standards
+          </button>
+        </div>
+        <p className="text-[10px] text-stone-400 dark:text-stone-500">
+          95% Creator Split • Community Shield &amp; Trust Protected
+        </p>
       </div>
 
     </aside>

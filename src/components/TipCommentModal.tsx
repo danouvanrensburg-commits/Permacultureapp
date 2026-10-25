@@ -141,7 +141,7 @@ export const TipCommentModal: React.FC<TipCommentModalProps> = ({
 
         {/* Comment Snippet & Total Received Drops */}
         <div className="p-3 rounded-2xl bg-neutral-50 dark:bg-stone-950/80 border border-neutral-200 dark:border-stone-800/80 space-y-1.5">
-          <p className="text-xs text-neutral-700 dark:text-stone-300 italic line-clamp-2">
+          <p className="text-xs text-neutral-700 dark:text-stone-300 italic line-clamp-2 break-words [overflow-wrap:anywhere]">
             &ldquo;{comment.content}&rdquo;
           </p>
           <div className="flex items-center justify-between text-[11px] pt-1 border-t border-neutral-200 dark:border-stone-800/60 font-mono">

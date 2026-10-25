@@ -11,6 +11,8 @@ import {
   MapPin,
   Sparkles,
   Filter,
+  Camera,
+  SlidersHorizontal,
   X,
   Lock,
   Loader2,
@@ -27,10 +29,13 @@ import {
   AlertTriangle
 } from 'lucide-react';
 import { usePermaculture } from '../context/PermacultureContext';
-import { CommunityPost } from '../types';
+import { useMessenger } from '../context/MessengerContext';
+import { CommunityPost, ModerationSeverity } from '../types';
 import { WaterGrowthOverlay } from './WaterGrowthOverlay';
 import { CommentSection } from './CommentSection';
 import { TipPostModal } from './TipPostModal';
+import { ReportContentModal } from './ReportContentModal';
+import { moderationService } from '../services/moderationService';
 
 interface CommunityFeedProps {
   navigate: (route: string) => void;
@@ -57,6 +62,8 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
     comments
   } = usePermaculture();
 
+  const { startChatWithUser } = useMessenger();
+
   const [feedScope, setFeedScope] = useState<'following' | 'all'>('following');
   const [selectedTag, setSelectedTag] = useState<string>('All');
   const [filterMode, setFilterMode] = useState<'all' | 'paywalled' | 'supporter'>('all');
@@ -64,6 +71,7 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
   // Track open comment sections per post
   const [openCommentPostIds, setOpenCommentPostIds] = useState<Set<string>>(new Set());
   const [selectedPostForTip, setSelectedPostForTip] = useState<CommunityPost | null>(null);
+  const [reportingPost, setReportingPost] = useState<CommunityPost | null>(null);
 
   const toggleComments = (postId: string) => {
     setOpenCommentPostIds(prev => {
@@ -109,15 +117,10 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
 
   // Modal state
   const [isPostComposerOpen, setIsPostComposerOpen] = useState(false);
+  const [modalAccessTier, setModalAccessTier] = useState<'free' | 'supporter' | 'vip'>('free');
 
-  // Inline Composer state
-  const [inlineCaption, setInlineCaption] = useState('');
-  const [inlineImageUrl, setInlineImageUrl] = useState<string | null>(null);
-  const [inlineVideoUrl, setInlineVideoUrl] = useState('');
-  const [isInlineVideoOpen, setIsInlineVideoOpen] = useState(false);
-  const [isInlineCompressing, setIsInlineCompressing] = useState(false);
-  const [inlineCompressionInfo, setInlineCompressionInfo] = useState<string | null>(null);
-  const inlineFileInputRef = useRef<HTMLInputElement>(null);
+  // Filter Drawer state (replacing multi-row stacked filter bars)
+  const [isFilterDrawerOpen, setIsFilterDrawerOpen] = useState(false);
 
   // Modal Composer state
   const [modalCaption, setModalCaption] = useState('');
@@ -250,36 +253,40 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
     }
   };
 
-  // Handle Inline Post Submission
-  const handleInlineSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!inlineCaption.trim() && !inlineImageUrl && !inlineVideoUrl.trim()) return;
-
-    createPost({
-      content: inlineCaption.trim(),
-      mediaUrls: inlineImageUrl ? [inlineImageUrl] : [],
-      videoUrl: inlineVideoUrl.trim() || undefined,
-      youtubeUrl: parseVideoUrl(inlineVideoUrl)?.type === 'youtube' ? inlineVideoUrl.trim() : undefined
-    });
-
-    setInlineCaption('');
-    setInlineImageUrl(null);
-    setInlineVideoUrl('');
-    setIsInlineVideoOpen(false);
-    setInlineCompressionInfo(null);
-    showNotice('Moment shared to community feed!');
-  };
-
   // Handle Modal Post Submission
   const handleModalSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!modalCaption.trim() && !modalImageUrl && !modalVideoUrl.trim()) return;
 
+    // Automated content moderation check
+    const safetyCheck = moderationService.evaluateText(modalCaption);
+    if (!safetyCheck.isSafe && safetyCheck.action === 'block') {
+      showNotice(`⚠️ Content Blocked: ${safetyCheck.reason}`);
+      return;
+    }
+    if (safetyCheck.autoReport) {
+      submitReport({
+        content_type: 'feed_post',
+        content_id: `post_auto_${Date.now()}`,
+        title: 'Automated Shield Review',
+        content_snippet: modalCaption.slice(0, 100),
+        author_id: currentUser.id,
+        author_name: currentUser.full_name,
+        author_username: currentUser.username,
+        author_avatar: currentUser.avatar_url,
+        reported_by_name: 'Automated Shield',
+        reported_by_username: 'system_shield',
+        reason: safetyCheck.autoReport.reason,
+        severity: safetyCheck.autoReport.severity
+      });
+    }
+
     createPost({
       content: modalCaption.trim(),
       mediaUrls: modalImageUrl ? [modalImageUrl] : [],
       videoUrl: modalVideoUrl.trim() || undefined,
-      youtubeUrl: parseVideoUrl(modalVideoUrl)?.type === 'youtube' ? modalVideoUrl.trim() : undefined
+      youtubeUrl: parseVideoUrl(modalVideoUrl)?.type === 'youtube' ? modalVideoUrl.trim() : undefined,
+      tags: modalAccessTier === 'vip' ? ['vip', 'paywall'] : modalAccessTier === 'supporter' ? ['supporter'] : undefined
     });
 
     setModalCaption('');
@@ -287,6 +294,7 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
     setModalVideoUrl('');
     setIsModalVideoOpen(false);
     setModalCompressionInfo(null);
+    setModalAccessTier('free');
     setIsPostComposerOpen(false);
     showNotice('Moment shared to community feed!');
   };
@@ -340,25 +348,36 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
   };
 
   const handleReportPost = (post: CommunityPost) => {
+    setActiveMenuPostId(null);
+    setReportingPost(post);
+  };
+
+  const handleSubmitReport = (details: {
+    category: string;
+    reason: string;
+    severity: ModerationSeverity;
+    additionalNotes?: string;
+  }) => {
+    if (!reportingPost) return;
     submitReport({
       content_type: 'feed_post',
-      content_id: post.id,
-      title: post.title || 'Community Feed Post',
-      content_snippet: post.content,
-      media_urls: post.media_urls,
-      author_id: post.author.id,
-      author_name: post.author.full_name,
-      author_username: post.author.username,
-      author_avatar: post.author.avatar_url,
-      author_badge: post.author.badge,
+      content_id: reportingPost.id,
+      title: reportingPost.title || 'Community Feed Post',
+      content_snippet: reportingPost.content,
+      media_urls: reportingPost.media_urls,
+      author_id: reportingPost.author.id,
+      author_name: reportingPost.author.full_name,
+      author_username: reportingPost.author.username,
+      author_avatar: reportingPost.author.avatar_url,
+      author_badge: reportingPost.author.badge,
       reported_by_id: currentUser.id,
       reported_by_name: currentUser.full_name,
       reported_by_username: currentUser.username,
-      reason: 'Reported by community reader: Potential policy violation or spam',
-      severity: 'medium'
+      reason: `${details.reason}${details.additionalNotes ? `: ${details.additionalNotes}` : ''}`,
+      severity: details.severity
     });
-    setActiveMenuPostId(null);
-    showNotice('🚩 Post reported to community moderators. Thank you!');
+    setReportingPost(null);
+    showNotice('🛡️ Report submitted to community stewards for review.');
   };
 
   return (
@@ -373,259 +392,269 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
           </div>
         )}
 
-        {/* TOP TITLE: Your Feed */}
-        <div className="flex items-center justify-between pb-2 border-b border-neutral-200 dark:border-[#15221d]">
-          <div className="flex items-center space-x-2.5">
-            <Sparkles className="h-6 w-6 text-emerald-600 dark:text-emerald-400 stroke-[2.2]" />
-            <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-neutral-900 dark:text-white font-sans">
-              Your Feed
+        {/* ============================================================ */}
+        {/* BOTANICAL COMMONS HERO BANNER                                */}
+        {/* ============================================================ */}
+        <div className="relative rounded-3xl overflow-hidden border border-[#E7E1D8] dark:border-[#1b2b24] shadow-md group">
+          <img
+            src="/src/assets/images/hero_food_forest_canopy_1792051977298.jpg"
+            alt="Permaculture Food Forest Canopy"
+            className="w-full h-44 sm:h-52 object-cover transition-transform duration-700 group-hover:scale-102"
+          />
+          <div className="absolute inset-0 bg-gradient-to-t from-stone-950/85 via-stone-950/40 to-transparent flex flex-col justify-end p-5 sm:p-7 text-white">
+            <div className="flex items-center space-x-2 text-emerald-300 text-xs font-semibold uppercase tracking-wider mb-1">
+              <Sprout className="h-4 w-4" />
+              <span>Regenerative Commons</span>
+            </div>
+            <h1 className="text-xl sm:text-2xl lg:text-3xl font-extrabold tracking-tight text-white font-sans drop-shadow-sm">
+              Cultivate Resilient Ecosystems
             </h1>
+            <p className="text-xs sm:text-sm text-stone-200 mt-1 max-w-xl line-clamp-2">
+              Share field observations, water creators with rain drops, and learn regenerative living practices.
+            </p>
           </div>
         </div>
 
         {/* ============================================================ */}
-        {/* SIMPLIFIED INLINE POST COMPOSER                              */}
+        {/* STREAMLINED FACEBOOK-STYLE POST COMPOSER                     */}
         {/* ============================================================ */}
-        <div className="rounded-3xl bg-white dark:bg-[#0f1714] border border-neutral-200 dark:border-[#1b2b24] p-4 sm:p-5 space-y-3 shadow-sm dark:shadow-xl transition-all">
-          <form onSubmit={handleInlineSubmit} className="space-y-3">
-            <div className="flex items-start space-x-3">
-              <div className="h-10 w-10 rounded-full bg-emerald-600 flex items-center justify-center text-white font-bold text-base flex-shrink-0 shadow-inner overflow-hidden ring-1 ring-emerald-500/30">
-                {currentUser.avatar_url ? (
-                  <img
-                    src={currentUser.avatar_url}
-                    alt={currentUser.full_name}
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <span>{currentUser.full_name.charAt(0) || 'U'}</span>
-                )}
+        <div className="rounded-2xl sm:rounded-3xl bg-white dark:bg-[#0f1714] border border-[#E7E1D8] dark:border-[#1b2b24] p-3 sm:p-4 shadow-2xs hover:shadow-xs transition-all">
+          <div className="flex items-center space-x-2.5 sm:space-x-3">
+            <button
+              type="button"
+              onClick={() => navigate(`profile/${currentUser.username}`)}
+              className="shrink-0 cursor-pointer group"
+              title={`View @${currentUser.username}`}
+            >
+              <img
+                src={currentUser.avatar_url || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=300&q=80'}
+                alt={currentUser.full_name}
+                className="h-9 w-9 sm:h-10 sm:w-10 rounded-full object-cover ring-1 ring-emerald-600/30 group-hover:ring-emerald-500 transition-all"
+              />
+            </button>
+
+            {/* Quick Input Bar that opens full creation modal */}
+            <button
+              type="button"
+              onClick={() => setIsPostComposerOpen(true)}
+              className="flex-1 text-left bg-[#F4EFEA] hover:bg-[#EBE5DC] dark:bg-[#15231e] dark:hover:bg-[#1c3228] text-stone-600 dark:text-stone-400 text-xs sm:text-sm px-4 py-2.5 rounded-full border border-[#E7E1D8] dark:border-[#1e342c] transition-all cursor-pointer font-normal truncate"
+            >
+              Share a thought or moment...
+            </button>
+
+            {/* Quick Camera / Photo Button */}
+            <button
+              type="button"
+              onClick={() => {
+                setIsPostComposerOpen(true);
+                setTimeout(() => modalFileInputRef.current?.click(), 150);
+              }}
+              className="flex items-center justify-center p-2 sm:px-3 sm:py-2 rounded-xl text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 transition-colors cursor-pointer shrink-0"
+              title="Add photo"
+            >
+              <Camera className="h-5 w-5 sm:mr-1.5" />
+              <span className="hidden sm:inline text-xs font-semibold">Photo</span>
+            </button>
+          </div>
+        </div>
+
+        {/* ============================================================ */}
+        {/* STREAMLINED SINGLE-ROW FILTER SUMMARY & "FILTER TOPICS" CTA  */}
+        {/* ============================================================ */}
+        <div className="flex items-center justify-between py-1 px-1">
+          {/* Active Filter Chips Preview */}
+          <div className="flex items-center space-x-1.5 truncate text-xs">
+            <span className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 font-semibold text-[11px]">
+              <span>{feedScope === 'following' ? '🌿 Following' : '🌎 Explore All'}</span>
+            </span>
+
+            {filterMode !== 'all' && (
+              <span className="inline-flex items-center px-2 py-0.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 font-medium text-[11px]">
+                {filterMode === 'paywalled' ? '⭐ Paywalled' : '💧 Supporter'}
+              </span>
+            )}
+
+            {selectedTag !== 'All' && (
+              <span className="inline-flex items-center px-2 py-0.5 rounded-lg bg-neutral-200 dark:bg-[#1b2b24] text-neutral-800 dark:text-stone-200 font-medium text-[11px] truncate max-w-[120px]">
+                #{selectedTag}
+              </span>
+            )}
+
+            <span className="text-[11px] text-stone-400 font-mono hidden sm:inline ml-1">
+              ({filteredPosts.length} moments)
+            </span>
+          </div>
+
+          {/* Single "Filter Topics" Trigger Button */}
+          <button
+            type="button"
+            onClick={() => setIsFilterDrawerOpen(true)}
+            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-white dark:bg-[#0f1714] hover:bg-neutral-100 dark:hover:bg-[#15231e] border border-neutral-200/80 dark:border-[#1b2b24] text-neutral-800 dark:text-stone-200 font-semibold text-xs shadow-2xs transition-all cursor-pointer shrink-0"
+          >
+            <SlidersHorizontal className="h-3.5 w-3.5 text-emerald-500" />
+            <span>Filter Topics</span>
+            {(selectedTag !== 'All' || filterMode !== 'all' || feedScope !== 'following') && (
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 ml-0.5" />
+            )}
+          </button>
+        </div>
+
+        {/* ============================================================ */}
+        {/* FILTER TOPICS BOTTOM DRAWER (MOBILE) / MODAL (DESKTOP)       */}
+        {/* ============================================================ */}
+        {isFilterDrawerOpen && (
+          <div
+            onClick={() => setIsFilterDrawerOpen(false)}
+            className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/60 dark:bg-stone-950/75 backdrop-blur-sm animate-in fade-in duration-200"
+          >
+            <div
+              onClick={e => e.stopPropagation()}
+              className="relative w-full max-w-lg rounded-t-3xl sm:rounded-3xl border border-neutral-200 dark:border-[#1e342c] bg-white dark:bg-[#0f1714] p-5 sm:p-6 shadow-2xl text-neutral-900 dark:text-stone-100 max-h-[85vh] overflow-y-auto animate-in slide-in-from-bottom sm:zoom-in-95 duration-200 space-y-5"
+            >
+              {/* Drawer Pull Bar (mobile) */}
+              <div className="flex sm:hidden justify-center -mt-2 pb-2">
+                <div className="w-12 h-1.5 rounded-full bg-neutral-300 dark:bg-neutral-700" />
               </div>
 
-              {/* Single clean Text Area for post caption */}
-              <div className="flex-1">
-                <textarea
-                  rows={2}
-                  value={inlineCaption}
-                  onChange={e => setInlineCaption(e.target.value)}
-                  placeholder="Share a thought or a moment of your day..."
-                  className="w-full bg-neutral-50 dark:bg-[#15231e] border border-neutral-200 dark:border-[#1e342c] rounded-2xl px-4 py-2.5 text-xs sm:text-sm text-neutral-900 dark:text-stone-100 placeholder-neutral-400 dark:placeholder-stone-400 focus:outline-none focus:border-emerald-500/70 focus:ring-1 focus:ring-emerald-500/30 transition-all resize-none"
-                />
+              <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-[#1b2b24]">
+                <div className="flex items-center space-x-2.5">
+                  <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                    <SlidersHorizontal className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-base text-neutral-900 dark:text-stone-100">Filter Moments Feed</h3>
+                    <p className="text-xs text-stone-500 dark:text-stone-400">Tune your community feed view</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsFilterDrawerOpen(false)}
+                  className="p-1 rounded-xl text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-neutral-100 dark:hover:bg-[#15231e] transition-colors cursor-pointer"
+                >
+                  <X className="h-5 w-5" />
+                </button>
               </div>
-            </div>
 
-            {/* Attached Photo Preview with Compression Info */}
-            {inlineImageUrl && (
-              <div className="relative rounded-2xl overflow-hidden border border-emerald-500/30 bg-stone-950 max-h-60 group">
-                <img
-                  src={inlineImageUrl}
-                  alt="Attachment preview"
-                  className="w-full h-48 object-cover rounded-2xl"
-                />
+              {/* 1. Feed Scope */}
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-neutral-800 dark:text-stone-200 uppercase tracking-wider">
+                  Feed Source
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setFeedScope('following')}
+                    className={`py-2.5 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                      feedScope === 'following'
+                        ? 'bg-emerald-500/20 border-emerald-500 text-emerald-700 dark:text-emerald-300 shadow-xs'
+                        : 'bg-neutral-50 dark:bg-[#15231e] border-neutral-200 dark:border-[#1b2b24] text-stone-600 dark:text-stone-400'
+                    }`}
+                  >
+                    🌿 Following ({followedCreatorIds.length} Stewards)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFeedScope('all')}
+                    className={`py-2.5 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                      feedScope === 'all'
+                        ? 'bg-emerald-500/20 border-emerald-500 text-emerald-700 dark:text-emerald-300 shadow-xs'
+                        : 'bg-neutral-50 dark:bg-[#15231e] border-neutral-200 dark:border-[#1b2b24] text-stone-600 dark:text-stone-400'
+                    }`}
+                  >
+                    🌎 Explore All
+                  </button>
+                </div>
+              </div>
+
+              {/* 2. Access Tier */}
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-neutral-800 dark:text-stone-200 uppercase tracking-wider">
+                  Access Level
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setFilterMode('all')}
+                    className={`py-2 px-2.5 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${
+                      filterMode === 'all'
+                        ? 'bg-emerald-500/20 border-emerald-500 text-emerald-700 dark:text-emerald-300 font-bold'
+                        : 'bg-neutral-50 dark:bg-[#15231e] border-neutral-200 dark:border-[#1b2b24] text-stone-600 dark:text-stone-400'
+                    }`}
+                  >
+                    All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFilterMode('paywalled')}
+                    className={`py-2 px-2.5 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${
+                      filterMode === 'paywalled'
+                        ? 'bg-amber-500/20 border-amber-500 text-amber-700 dark:text-amber-300 font-bold'
+                        : 'bg-neutral-50 dark:bg-[#15231e] border-neutral-200 dark:border-[#1b2b24] text-stone-600 dark:text-stone-400'
+                    }`}
+                  >
+                    ⭐ Paywalled
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFilterMode('supporter')}
+                    className={`py-2 px-2.5 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${
+                      filterMode === 'supporter'
+                        ? 'bg-cyan-500/20 border-cyan-500 text-cyan-700 dark:text-cyan-300 font-bold'
+                        : 'bg-neutral-50 dark:bg-[#15231e] border-neutral-200 dark:border-[#1b2b24] text-stone-600 dark:text-stone-400'
+                    }`}
+                  >
+                    💧 Supporter
+                  </button>
+                </div>
+              </div>
+
+              {/* 3. Topic Pills */}
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-neutral-800 dark:text-stone-200 uppercase tracking-wider">
+                  Permaculture Topics
+                </label>
+                <div className="flex flex-wrap gap-1.5">
+                  {filterTags.map(tag => (
+                    <button
+                      key={tag}
+                      type="button"
+                      onClick={() => setSelectedTag(tag)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all cursor-pointer ${
+                        selectedTag === tag
+                          ? 'bg-emerald-500 text-stone-950 font-bold shadow-xs'
+                          : 'bg-neutral-100 dark:bg-[#15231e] border border-neutral-200 dark:border-[#1b2b24] text-neutral-700 dark:text-stone-400 hover:text-neutral-900 dark:hover:text-stone-200'
+                      }`}
+                    >
+                      {tag}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center justify-between pt-3 border-t border-neutral-200 dark:border-[#1b2b24]">
                 <button
                   type="button"
                   onClick={() => {
-                    setInlineImageUrl(null);
-                    setInlineCompressionInfo(null);
+                    setSelectedTag('All');
+                    setFilterMode('all');
+                    setFeedScope('following');
                   }}
-                  className="absolute top-2.5 right-2.5 p-1.5 rounded-full bg-stone-900/80 hover:bg-red-500 text-stone-200 hover:text-white transition-colors cursor-pointer shadow-lg"
-                  title="Remove image"
+                  className="text-xs text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 underline font-medium cursor-pointer"
                 >
-                  <X className="h-4 w-4" />
+                  Reset All Filters
                 </button>
-                {inlineCompressionInfo && (
-                  <div className="absolute bottom-2 left-2 px-2.5 py-1 rounded-lg bg-stone-950/80 backdrop-blur-sm border border-emerald-500/30 text-[11px] font-mono text-emerald-300 flex items-center space-x-1.5">
-                    <Sparkles className="h-3 w-3 text-emerald-400" />
-                    <span>{inlineCompressionInfo}</span>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Paste Video Link Input */}
-            {isInlineVideoOpen && (
-              <div className="flex items-center space-x-2 bg-neutral-50 dark:bg-[#15231e] border border-neutral-200 dark:border-[#1e342c] rounded-xl px-3.5 py-2 text-xs">
-                <Play className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                <input
-                  type="url"
-                  value={inlineVideoUrl}
-                  onChange={e => setInlineVideoUrl(e.target.value)}
-                  placeholder="Paste video link (YouTube, Vimeo, or direct link)..."
-                  className="flex-1 bg-transparent text-neutral-900 dark:text-stone-100 placeholder-neutral-400 dark:placeholder-stone-500 focus:outline-none text-xs"
-                />
-                {inlineVideoUrl && (
-                  <button
-                    type="button"
-                    onClick={() => setInlineVideoUrl('')}
-                    className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-200"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                )}
-              </div>
-            )}
-
-            {/* Hidden Photo File Input with browser-image-compression */}
-            <input
-              type="file"
-              ref={inlineFileInputRef}
-              accept="image/*"
-              className="hidden"
-              onChange={e => {
-                const file = e.target.files?.[0];
-                if (file) {
-                  compressImageFile(
-                    file,
-                    (url, info) => {
-                      setInlineImageUrl(url);
-                      setInlineCompressionInfo(info);
-                    },
-                    setIsInlineCompressing
-                  );
-                }
-              }}
-            />
-
-            {/* Action Triggers & Publish Button */}
-            <div className="flex items-center justify-between pt-1 border-t border-neutral-200 dark:border-[#15221d]">
-              <div className="flex items-center space-x-3 sm:space-x-5 text-xs">
-                {/* Upload Photo Button (Compressed) */}
                 <button
                   type="button"
-                  onClick={() => inlineFileInputRef.current?.click()}
-                  disabled={isInlineCompressing}
-                  className="flex items-center space-x-1.5 text-neutral-700 dark:text-stone-300 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors cursor-pointer disabled:opacity-50"
-                  title="Upload compressed photo"
+                  onClick={() => setIsFilterDrawerOpen(false)}
+                  className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-stone-950 font-bold text-xs shadow-md transition-all cursor-pointer"
                 >
-                  {isInlineCompressing ? (
-                    <Loader2 className="h-4 w-4 text-emerald-500 dark:text-emerald-400 animate-spin" />
-                  ) : (
-                    <ImageIcon className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-                  )}
-                  <span className="font-semibold text-neutral-700 dark:text-stone-300">
-                    {isInlineCompressing ? 'Compressing...' : 'Upload Photo'}
-                  </span>
-                </button>
-
-                {/* Paste Video Link Button */}
-                <button
-                  type="button"
-                  onClick={() => setIsInlineVideoOpen(prev => !prev)}
-                  className={`flex items-center space-x-1.5 transition-colors cursor-pointer ${
-                    isInlineVideoOpen ? 'text-emerald-600 dark:text-emerald-400 font-bold' : 'text-neutral-700 dark:text-stone-300 hover:text-emerald-600 dark:hover:text-emerald-400'
-                  }`}
-                  title="Paste video link"
-                >
-                  <Play className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-                  <span className="font-semibold text-neutral-700 dark:text-stone-300">Paste Video Link</span>
+                  Apply Filters
                 </button>
               </div>
-
-              {/* Submit Button: Post Moment */}
-              <button
-                type="submit"
-                disabled={(!inlineCaption.trim() && !inlineImageUrl && !inlineVideoUrl.trim()) || isInlineCompressing}
-                className="flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-stone-950 font-bold text-xs shadow-md transition-all cursor-pointer active:scale-95"
-              >
-                <Send className="h-3 w-3 stroke-[2.5]" />
-                <span>Post Moment</span>
-              </button>
             </div>
-          </form>
-        </div>
-
-        {/* FEED SCOPE TABS: Following (Current User + Followed Creators) vs Explore All */}
-        <div className="flex items-center justify-between border-b border-neutral-200 dark:border-[#1b2b24] pb-3">
-          <div className="flex items-center space-x-2">
-            <button
-              onClick={() => setFeedScope('following')}
-              className={`flex items-center space-x-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition-all cursor-pointer ${
-                feedScope === 'following'
-                  ? 'bg-gradient-to-r from-emerald-500 to-emerald-600 text-stone-950 shadow-md shadow-emerald-950/40'
-                  : 'bg-white dark:bg-[#0f1714] text-neutral-700 dark:text-stone-400 hover:text-neutral-900 dark:hover:text-stone-200 border border-neutral-200 dark:border-[#1b2b24]'
-              }`}
-            >
-              <span>🌿 Following Feed</span>
-              <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono ${
-                feedScope === 'following' ? 'bg-stone-950/20 text-stone-950 font-black' : 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 font-semibold'
-              }`}>
-                You + {followedCreatorIds.length} Stewards
-              </span>
-            </button>
-
-            <button
-              onClick={() => setFeedScope('all')}
-              className={`px-4 py-2.5 rounded-2xl text-xs font-bold transition-all cursor-pointer ${
-                feedScope === 'all'
-                  ? 'bg-gradient-to-r from-emerald-500 to-emerald-600 text-stone-950 shadow-md shadow-emerald-950/40'
-                  : 'bg-white dark:bg-[#0f1714] text-neutral-700 dark:text-stone-400 hover:text-neutral-900 dark:hover:text-stone-200 border border-neutral-200 dark:border-[#1b2b24]'
-              }`}
-            >
-              <span>Explore All</span>
-            </button>
           </div>
-
-          <div className="hidden sm:flex items-center space-x-1.5 text-xs text-stone-500 font-mono">
-            <span>{filteredPosts.length} moments</span>
-          </div>
-        </div>
-
-        {/* FEED FILTER TABS (All Posts, Paywalled, Supporter Only) */}
-        <div className="flex items-center justify-between border-b border-neutral-200 dark:border-[#1b2b24] pb-2 text-xs font-semibold">
-          <div className="flex items-center space-x-2">
-            <button
-              onClick={() => setFilterMode('all')}
-              className={`px-4 py-2 rounded-xl transition-all cursor-pointer ${
-                filterMode === 'all'
-                  ? 'bg-white dark:bg-[#15231e] text-emerald-600 dark:text-emerald-400 border border-neutral-200 dark:border-[#1e342c] shadow-sm font-bold'
-                  : 'text-neutral-600 dark:text-stone-400 hover:text-neutral-900 dark:hover:text-stone-200'
-              }`}
-            >
-              All Moments
-            </button>
-            <button
-              onClick={() => setFilterMode('paywalled')}
-              className={`px-4 py-2 rounded-xl transition-all cursor-pointer ${
-                filterMode === 'paywalled'
-                  ? 'bg-white dark:bg-[#15231e] text-amber-600 dark:text-amber-400 border border-neutral-200 dark:border-[#1e342c] shadow-sm font-bold'
-                  : 'text-neutral-600 dark:text-stone-400 hover:text-neutral-900 dark:hover:text-stone-200'
-              }`}
-            >
-              Paywalled
-            </button>
-            <button
-              onClick={() => setFilterMode('supporter')}
-              className={`px-4 py-2 rounded-xl transition-all cursor-pointer ${
-                filterMode === 'supporter'
-                  ? 'bg-white dark:bg-[#15231e] text-emerald-600 dark:text-emerald-400 border border-neutral-200 dark:border-[#1e342c] shadow-sm font-bold'
-                  : 'text-neutral-600 dark:text-stone-400 hover:text-neutral-900 dark:hover:text-stone-200'
-              }`}
-            >
-              Supporter Only
-            </button>
-          </div>
-
-          <div className="flex items-center space-x-1 text-[11px] text-stone-500 font-mono sm:hidden">
-            <span>{filteredPosts.length} moments</span>
-          </div>
-        </div>
-
-        {/* Tag Filters */}
-        <div className="flex items-center space-x-2 overflow-x-auto pb-1 scrollbar-none">
-          <Filter className="h-3.5 w-3.5 text-stone-400 dark:text-stone-500 shrink-0 mr-1" />
-          {filterTags.map(tag => (
-            <button
-              key={tag}
-              onClick={() => setSelectedTag(tag)}
-              className={`px-3 py-1 rounded-xl text-xs font-medium whitespace-nowrap transition-all cursor-pointer ${
-                selectedTag === tag
-                  ? 'bg-emerald-500 text-stone-950 font-bold shadow-sm shadow-emerald-950/40'
-                  : 'bg-white dark:bg-[#0f1714] border border-neutral-200 dark:border-[#1b2b24] text-neutral-700 dark:text-stone-400 hover:text-neutral-900 dark:hover:text-stone-200'
-              }`}
-            >
-              {tag}
-            </button>
-          ))}
-        </div>
+        )}
 
         {/* ============================================================ */}
         {/* SIMPLIFIED POST CREATION MODAL                               */}
@@ -652,15 +681,30 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
 
               <form onSubmit={handleModalSubmit} className="space-y-4">
                 {/* Single Text Area for Post Caption */}
-                <div>
+                <div className="space-y-1.5">
                   <textarea
                     rows={4}
                     required
                     value={modalCaption}
                     onChange={e => setModalCaption(e.target.value)}
-                    placeholder="Share a thought or a moment of your day..."
+                    placeholder="Share a thought or a moment... (Tip: Tag @dan with a photo to ask for field guidance!)"
                     className="w-full bg-neutral-50 dark:bg-[#15231e] border border-neutral-300 dark:border-[#1e342c] rounded-2xl px-4 py-3 text-sm text-neutral-900 dark:text-stone-100 placeholder-neutral-400 dark:placeholder-stone-400 focus:outline-none focus:border-emerald-500/70 focus:ring-1 focus:ring-emerald-500/30 transition-all resize-none"
                   />
+                  <div className="flex items-center justify-between text-xs">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!modalCaption.includes('@dan')) {
+                          setModalCaption(prev => prev ? `${prev} @dan ` : '@dan ');
+                        }
+                      }}
+                      className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 text-[11px] font-semibold hover:bg-emerald-100 transition-colors cursor-pointer"
+                    >
+                      <Sparkles className="h-3 w-3 text-emerald-600" />
+                      <span>Tag @dan (Ask Dan Elder)</span>
+                    </button>
+                    <span className="text-[11px] text-stone-400">Dan reviews photos, swales & soil</span>
+                  </div>
                 </div>
 
                 {/* Attached Photo Preview */}
@@ -734,6 +778,55 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
                     }
                   }}
                 />
+
+                {/* Audience & Paywall Access Tier Selector */}
+                <div className="p-3.5 rounded-2xl bg-neutral-50 dark:bg-[#15231e] border border-neutral-200 dark:border-[#1e342c] space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-neutral-800 dark:text-stone-200 flex items-center space-x-1.5">
+                      <Lock className="h-3.5 w-3.5 text-amber-500" />
+                      <span>Audience &amp; Access Tier</span>
+                    </span>
+                    <span className="text-[11px] font-mono text-stone-500">
+                      {modalAccessTier === 'free' ? 'Public Feed' : modalAccessTier === 'supporter' ? '$5 Supporter Tier' : '$10 VIP Paywall'}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setModalAccessTier('free')}
+                      className={`py-1.5 px-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                        modalAccessTier === 'free'
+                          ? 'bg-emerald-500/20 border-emerald-500 text-emerald-700 dark:text-emerald-300 font-bold shadow-2xs'
+                          : 'bg-white dark:bg-[#0f1714] border-neutral-200 dark:border-[#1b2b24] text-stone-500'
+                      }`}
+                    >
+                      Free for All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setModalAccessTier('supporter')}
+                      className={`py-1.5 px-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                        modalAccessTier === 'supporter'
+                          ? 'bg-cyan-500/20 border-cyan-500 text-cyan-700 dark:text-cyan-300 font-bold shadow-2xs'
+                          : 'bg-white dark:bg-[#0f1714] border-neutral-200 dark:border-[#1b2b24] text-stone-500'
+                      }`}
+                    >
+                      🌿 $5 Supporter
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setModalAccessTier('vip')}
+                      className={`py-1.5 px-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                        modalAccessTier === 'vip'
+                          ? 'bg-amber-500/20 border-amber-500 text-amber-700 dark:text-amber-300 font-bold shadow-2xs'
+                          : 'bg-white dark:bg-[#0f1714] border-neutral-200 dark:border-[#1b2b24] text-stone-500'
+                      }`}
+                    >
+                      ⭐ $10 VIP Paywall
+                    </button>
+                  </div>
+                </div>
 
                 {/* Bottom Action Bar */}
                 <div className="pt-3 border-t border-neutral-200 dark:border-[#1b2b24] flex items-center justify-between">
@@ -917,9 +1010,9 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
                   key={post.id}
                   className={`rounded-3xl border ${
                     post.is_pinned
-                      ? 'border-amber-500/40 bg-amber-500/5 dark:bg-neutral-900'
-                      : 'border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900'
-                  } p-5 sm:p-6 shadow-sm dark:shadow-xl transition-all`}
+                      ? 'border-amber-400/60 bg-amber-50/50 dark:bg-amber-950/15'
+                      : 'border-[#E7E1D8] dark:border-stone-800 bg-white dark:bg-[#0f1714]'
+                  } p-3.5 sm:p-5 md:p-6 w-full min-w-0 max-w-full overflow-hidden shadow-2xs hover:shadow-xs transition-all`}
                 >
                   {/* Author Card Header */}
                   <div className="flex items-start justify-between">
@@ -930,15 +1023,15 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
                       <img
                         src={post.author?.avatar_url || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=300&q=80'}
                         alt={post.author?.full_name || 'Creator'}
-                        className="h-11 w-11 rounded-2xl object-cover ring-1 ring-amber-500/40 group-hover:ring-amber-400 transition-all"
+                        className="h-11 w-11 rounded-2xl object-cover ring-1 ring-emerald-600/30 group-hover:ring-emerald-500 transition-all"
                       />
                       <div>
                         <div className="flex items-center space-x-2">
-                          <span className="font-bold text-neutral-900 dark:text-stone-100 group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors">
+                          <span className="font-bold text-stone-900 dark:text-stone-100 group-hover:text-emerald-700 dark:group-hover:text-emerald-400 transition-colors">
                             {post.author?.full_name || 'Regenerative Steward'}
                           </span>
                           {post.author?.badge && (
-                            <span className="px-2 py-0.5 rounded-md text-[10px] font-mono bg-amber-500/15 text-amber-800 dark:text-amber-300 font-semibold">
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-mono bg-amber-500/15 text-amber-900 dark:text-amber-300 font-semibold">
                               {post.author.badge}
                             </span>
                           )}
@@ -971,6 +1064,21 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
                         <span className="hidden sm:inline-block px-3 py-1 rounded-full text-[10px] font-mono bg-emerald-500/10 border border-emerald-500/20 text-emerald-800 dark:text-emerald-300 font-medium">
                           {post.permaculture_principle}
                         </span>
+                      )}
+
+                      {/* Quick Message Author Button */}
+                      {!isPostAuthor && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startChatWithUser(post.author_id);
+                          }}
+                          className="p-1.5 rounded-xl hover:bg-emerald-50 dark:hover:bg-emerald-950/40 text-stone-400 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors cursor-pointer"
+                          title={`Message ${post.author?.full_name || 'Author'}`}
+                        >
+                          <MessageCircle className="h-4 w-4" />
+                        </button>
                       )}
 
                       {/* Clean Three-Dots Option Menu (...) */}
@@ -1024,6 +1132,17 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
                             ) : (
                               /* Viewer options */
                               <>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setActiveMenuPostId(null);
+                                    startChatWithUser(post.author_id);
+                                  }}
+                                  className="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-neutral-700 dark:text-stone-300 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-neutral-100 dark:hover:bg-[#15231e] transition-colors cursor-pointer font-medium text-left"
+                                >
+                                  <MessageCircle className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                                  <span>Message Author</span>
+                                </button>
                                 <button
                                   type="button"
                                   onClick={() => handleToggleSave(post)}
@@ -1132,14 +1251,14 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
                   )}
 
                   {/* MICRO-TIPPING & ENGAGEMENT ACTIONS */}
-                  <div className="mt-5 pt-4 border-t border-neutral-200 dark:border-stone-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="mt-5 pt-4 border-t border-neutral-200 dark:border-stone-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 min-w-0">
                     {/* Micro-Tipping System for Creator Wallet */}
-                    <div className="flex items-center space-x-2">
-                      <span className="text-xs text-stone-500 dark:text-stone-400 font-medium">Plant the Rain 🌧️:</span>
+                    <div className="flex flex-wrap items-center gap-1.5 sm:space-x-2">
+                      <span className="text-xs text-stone-500 dark:text-stone-400 font-medium shrink-0">Plant the Rain 🌧️:</span>
                       <button
                         type="button"
                         onClick={() => handleTipWithGrowth(post.id, 20)}
-                        className={`relative px-2.5 py-1 rounded-lg bg-emerald-100 dark:bg-emerald-950/80 border border-emerald-500/30 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-200 dark:hover:bg-emerald-900/60 text-xs font-mono font-bold transition-all active:scale-95 flex items-center space-x-1 cursor-pointer overflow-visible ${
+                        className={`relative px-2 sm:px-2.5 py-1 rounded-lg bg-emerald-100 dark:bg-emerald-950/80 border border-emerald-500/30 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-200 dark:hover:bg-emerald-900/60 text-xs font-mono font-bold transition-all active:scale-95 flex items-center space-x-1 cursor-pointer overflow-visible shrink-0 ${
                           growingTipKey === `${post.id}-20` ? 'animate-growth-button-pulse ring-2 ring-emerald-400/80 shadow-md shadow-emerald-500/30' : ''
                         }`}
                         title="Plant 20 Rain Drops ($0.20 min)"
@@ -1151,7 +1270,7 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
                       <button
                         type="button"
                         onClick={() => handleTipWithGrowth(post.id, 60)}
-                        className={`relative px-2.5 py-1 rounded-lg bg-emerald-100 dark:bg-emerald-950/80 border border-emerald-500/30 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-200 dark:hover:bg-emerald-900/60 text-xs font-mono font-bold transition-all active:scale-95 flex items-center space-x-1 cursor-pointer overflow-visible ${
+                        className={`relative px-2 sm:px-2.5 py-1 rounded-lg bg-emerald-100 dark:bg-emerald-950/80 border border-emerald-500/30 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-200 dark:hover:bg-emerald-900/60 text-xs font-mono font-bold transition-all active:scale-95 flex items-center space-x-1 cursor-pointer overflow-visible shrink-0 ${
                           growingTipKey === `${post.id}-60` ? 'animate-growth-button-pulse ring-2 ring-emerald-400/80 shadow-md shadow-emerald-500/30' : ''
                         }`}
                         title="Plant 60 Rain Drops ($0.60)"
@@ -1163,7 +1282,7 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
                       <button
                         type="button"
                         onClick={() => handleTipWithGrowth(post.id, 100)}
-                        className={`relative px-2.5 py-1 rounded-lg bg-emerald-100 dark:bg-emerald-950/80 border border-emerald-500/30 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-200 dark:hover:bg-emerald-900/60 text-xs font-mono font-bold transition-all active:scale-95 flex items-center space-x-1 cursor-pointer overflow-visible ${
+                        className={`relative px-2 sm:px-2.5 py-1 rounded-lg bg-emerald-100 dark:bg-emerald-950/80 border border-emerald-500/30 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-200 dark:hover:bg-emerald-900/60 text-xs font-mono font-bold transition-all active:scale-95 flex items-center space-x-1 cursor-pointer overflow-visible shrink-0 ${
                           growingTipKey === `${post.id}-100` ? 'animate-growth-button-pulse ring-2 ring-emerald-400/80 shadow-md shadow-emerald-500/30' : ''
                         }`}
                         title="Plant 100 Rain Drops ($1.00)"
@@ -1175,7 +1294,7 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
                       <button
                         type="button"
                         onClick={() => handleTipWithGrowth(post.id, 500)}
-                        className={`relative hidden sm:flex px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-800 dark:text-amber-300 hover:bg-amber-500/25 text-xs font-mono font-bold transition-all active:scale-95 items-center space-x-1 cursor-pointer overflow-visible ${
+                        className={`relative hidden sm:flex px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-800 dark:text-amber-300 hover:bg-amber-500/25 text-xs font-mono font-bold transition-all active:scale-95 items-center space-x-1 cursor-pointer overflow-visible shrink-0 ${
                           growingTipKey === `${post.id}-500` ? 'animate-growth-button-pulse ring-2 ring-amber-400/80 shadow-md shadow-amber-500/30' : ''
                         }`}
                         title="Plant 1 Water Bucket 🪣 (500 Rain Drops)"
@@ -1187,7 +1306,7 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
                       <button
                         type="button"
                         onClick={() => setSelectedPostForTip(post)}
-                        className="px-2.5 py-1 rounded-lg text-cyan-600 dark:text-cyan-400 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-xs font-mono font-bold transition-all active:scale-95 flex items-center space-x-1 cursor-pointer shadow-xs"
+                        className="px-2 sm:px-2.5 py-1 rounded-lg text-cyan-600 dark:text-cyan-400 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-xs font-mono font-bold transition-all active:scale-95 flex items-center space-x-1 cursor-pointer shadow-xs shrink-0"
                         title="Open simplified tip dialog for this post"
                       >
                         <span>💧</span>
@@ -1197,10 +1316,10 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
                     </div>
 
                     {/* Harvested Count & Social Metrics */}
-                    <div className="flex items-center space-x-4 text-xs">
-                      <div className="flex items-center space-x-1.5 text-cyan-800 dark:text-cyan-300 font-mono font-bold bg-cyan-50 dark:bg-cyan-950/50 border border-cyan-500/30 px-3 py-1 rounded-xl">
+                    <div className="flex flex-wrap items-center gap-2 sm:gap-4 text-xs">
+                      <div className="flex items-center space-x-1.5 text-cyan-800 dark:text-cyan-300 font-mono font-bold bg-cyan-50 dark:bg-cyan-950/50 border border-cyan-500/30 px-2.5 sm:px-3 py-1 rounded-xl shrink-0">
                         <span>💧</span>
-                        <span>{((post.totalReceivedDrops ?? post.moments_harvested) || 0).toLocaleString()} Rain Drops</span>
+                        <span>{((post.totalReceivedDrops ?? post.moments_harvested) || 0).toLocaleString()} Drops</span>
                         {((post.totalReceivedDrops ?? post.moments_harvested) || 0) >= 500 && (
                           <span className="text-[11px] font-normal text-emerald-600 dark:text-emerald-400">
                             ({(((post.totalReceivedDrops ?? post.moments_harvested) || 0) / 500).toFixed(1)} 🪣)
@@ -1210,7 +1329,7 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
 
                       <button
                         onClick={() => likePost(post.id)}
-                        className="flex items-center space-x-1.5 text-stone-500 dark:text-stone-400 hover:text-amber-600 dark:hover:text-amber-400 transition-colors cursor-pointer"
+                        className="flex items-center space-x-1.5 text-stone-500 dark:text-stone-400 hover:text-amber-600 dark:hover:text-amber-400 transition-colors cursor-pointer shrink-0"
                       >
                         <Heart className="h-4 w-4" />
                         <span>{post.likes_count}</span>
@@ -1219,7 +1338,7 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
                       <button
                         type="button"
                         onClick={() => toggleComments(post.id)}
-                        className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                        className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-xl text-xs font-semibold transition-all cursor-pointer shrink-0 ${
                           openCommentPostIds.has(post.id)
                             ? 'bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border border-emerald-500/40 shadow-sm'
                             : 'text-neutral-600 dark:text-stone-400 hover:text-neutral-900 dark:hover:text-stone-200 hover:bg-neutral-100 dark:hover:bg-neutral-800/80'
@@ -1230,16 +1349,18 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
                         <span>💬 Comments ({comments.filter(c => c.post_id === post.id).length || post.comments_count || 0})</span>
                       </button>
                     </div>
+                  </div>
 
-                    {/* Expandable Comment & Nested Reply System */}
-                    {openCommentPostIds.has(post.id) && (
+                  {/* Expandable Comment & Nested Reply System - Full width on laptop & mobile */}
+                  {openCommentPostIds.has(post.id) && (
+                    <div className="w-full min-w-0 max-w-full overflow-hidden mt-2 pt-1 animate-in fade-in duration-200">
                       <CommentSection
                         targetId={post.id}
                         targetType="post"
                         targetAuthorUsername={post.author.username}
                       />
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </article>
               );
             })
@@ -1253,6 +1374,18 @@ export const CommunityFeed: React.FC<CommunityFeedProps> = ({ navigate }) => {
           post={posts.find(p => p.id === selectedPostForTip.id) || selectedPostForTip}
           isOpen={!!selectedPostForTip}
           onClose={() => setSelectedPostForTip(null)}
+        />
+      )}
+
+      {/* Categorized Content Moderation Report Modal */}
+      {reportingPost && (
+        <ReportContentModal
+          isOpen={!!reportingPost}
+          onClose={() => setReportingPost(null)}
+          onSubmit={handleSubmitReport}
+          contentType="feed_post"
+          contentSnippet={reportingPost.content}
+          authorUsername={reportingPost.author.username}
         />
       )}
     </div>

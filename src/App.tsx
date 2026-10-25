@@ -5,6 +5,9 @@ import { RightSidebar } from './components/RightSidebar';
 import { BushTVChat } from './components/BushTVChat';
 import { CommunityFeed } from './components/CommunityFeed';
 import { ExploreHub } from './components/ExploreHub';
+import { LearnHub } from './components/LearnHub';
+import { CourseViewer } from './components/CourseViewer';
+import { CourseCreator } from './components/CourseCreator';
 import { CreatorProfile } from './components/CreatorProfile';
 import { CreatorDashboard } from './components/CreatorDashboard';
 import { AdminDashboard } from './components/AdminDashboard';
@@ -15,6 +18,14 @@ import { FloatingDropletToast } from './components/FloatingDropletToast';
 import { GlobalSearchModal } from './components/GlobalSearchModal';
 import { AuthModal } from './components/AuthModal';
 import { Header } from './components/Header';
+import { BottomNavBar } from './components/BottomNavBar';
+import { MessengerDrawer } from './components/MessengerDrawer';
+import { MessengerProvider } from './context/MessengerContext';
+import { LegalPageView } from './components/LegalPageView';
+import { TermsOfServiceModal } from './components/TermsOfServiceModal';
+import { PrivacyPolicyModal } from './components/PrivacyPolicyModal';
+import { CommunityGuidelinesModal } from './components/CommunityGuidelinesModal';
+import { NotificationSettingsModal } from './components/NotificationSettingsModal';
 import { Menu, X, Droplets, Sparkles, User as UserIcon, Search } from 'lucide-react';
 
 const getInitialRouteInfo = (): { route: string; isSentLink: boolean } => {
@@ -64,6 +75,10 @@ function AppContent() {
 
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [isTermsModalOpen, setIsTermsModalOpen] = useState(false);
+  const [isPrivacyModalOpen, setIsPrivacyModalOpen] = useState(false);
+  const [isGuidelinesModalOpen, setIsGuidelinesModalOpen] = useState(false);
+  const [isNotificationSettingsOpen, setIsNotificationSettingsOpen] = useState(false);
 
   // If user was sent a direct link (e.g. to a creator profile) and is not logged in, prompt sign in and save target
   useEffect(() => {
@@ -127,8 +142,22 @@ function AppContent() {
     if (currentRoute === 'admin') {
       return <AdminDashboard navigate={navigate} />;
     }
+    if (currentRoute === 'learn') {
+      return <LearnHub navigate={navigate} />;
+    }
+    if (currentRoute === 'learn/create') {
+      return <CourseCreator navigate={navigate} />;
+    }
+    if (currentRoute.startsWith('learn/edit/')) {
+      const courseId = currentRoute.replace('learn/edit/', '');
+      return <CourseCreator navigate={navigate} existingCourseId={courseId} />;
+    }
+    if (currentRoute.startsWith('learn/')) {
+      const courseId = currentRoute.replace('learn/', '');
+      return <CourseViewer courseId={courseId} navigate={navigate} />;
+    }
     if (currentRoute === 'explore') {
-      return <ExploreHub navigate={navigate} />;
+      return <LearnHub navigate={navigate} />;
     }
     if (currentRoute.startsWith('profile/')) {
       const username = currentRoute.replace('profile/', '');
@@ -137,15 +166,19 @@ function AppContent() {
     if (currentRoute === 'profile') {
       return <CreatorProfile username={currentUser.username || 'danou_van_rensburg'} navigate={navigate} />;
     }
+    if (currentRoute === 'terms' || currentRoute === 'privacy' || currentRoute === 'guidelines' || currentRoute === 'standards') {
+      const legalType = currentRoute === 'standards' ? 'guidelines' : (currentRoute as 'terms' | 'privacy' | 'guidelines');
+      return <LegalPageView type={legalType} navigate={navigate} />;
+    }
 
     // Default to Feed page
     return <CommunityFeed navigate={navigate} />;
   };
 
-  const showRightSidebar = currentRoute === 'feed' || currentRoute === 'explore';
+  const showRightSidebar = currentRoute === 'feed';
 
   return (
-    <div className="min-h-screen bg-slate-100 dark:bg-[#070b09] text-neutral-900 dark:text-stone-100 flex font-sans selection:bg-emerald-500/30 selection:text-emerald-200 antialiased transition-colors">
+    <div className="min-h-screen bg-[#FBF9F5] dark:bg-[#070b09] text-stone-900 dark:text-stone-100 flex font-sans selection:bg-emerald-500/20 selection:text-emerald-950 dark:selection:text-emerald-200 antialiased transition-colors">
       
       {/* 1. DESKTOP FIXED LEFT SIDEBAR */}
       <div className="hidden md:block flex-shrink-0 z-30">
@@ -177,11 +210,14 @@ function AppContent() {
           navigate={navigate}
           onOpenMobileMenu={() => setIsMobileSidebarOpen(true)}
           onOpenSearch={() => setIsSearchOpen(true)}
+          onOpenNotificationSettings={() => setIsNotificationSettingsOpen(true)}
+          onOpenTerms={() => setIsTermsModalOpen(true)}
+          onOpenPrivacy={() => setIsPrivacyModalOpen(true)}
         />
 
         {/* MAIN BODY: Content Column + Right Sidebar Column */}
         <div className="flex-1 flex min-w-0">
-          <main className="flex-1 min-w-0">
+          <main className="flex-1 min-w-0 pb-16 md:pb-0">
             {renderCurrentView()}
           </main>
 
@@ -191,6 +227,9 @@ function AppContent() {
           )}
         </div>
       </div>
+
+      {/* FIXED MOBILE BOTTOM NAVIGATION BAR */}
+      <BottomNavBar currentRoute={currentRoute} navigate={navigate} />
 
       {/* Global Modals & Notifications */}
       <AuthModal
@@ -207,6 +246,23 @@ function AppContent() {
       <TransactionHistoryModal />
       <SqlSchemaModal />
       <FloatingDropletToast />
+      <MessengerDrawer />
+      <TermsOfServiceModal
+        isOpen={isTermsModalOpen}
+        onClose={() => setIsTermsModalOpen(false)}
+      />
+      <PrivacyPolicyModal
+        isOpen={isPrivacyModalOpen}
+        onClose={() => setIsPrivacyModalOpen(false)}
+      />
+      <CommunityGuidelinesModal
+        isOpen={isGuidelinesModalOpen}
+        onClose={() => setIsGuidelinesModalOpen(false)}
+      />
+      <NotificationSettingsModal
+        isOpen={isNotificationSettingsOpen}
+        onClose={() => setIsNotificationSettingsOpen(false)}
+      />
     </div>
   );
 }
@@ -214,7 +270,9 @@ function AppContent() {
 export default function App() {
   return (
     <PermacultureProvider>
-      <AppContent />
+      <MessengerProvider>
+        <AppContent />
+      </MessengerProvider>
     </PermacultureProvider>
   );
 }

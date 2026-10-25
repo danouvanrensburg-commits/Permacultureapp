@@ -29,6 +29,7 @@ export const TipPostModal: React.FC<TipPostModalProps> = ({
   const [selectedAmount, setSelectedAmount] = useState<number>(40);
   const [isCustom, setIsCustom] = useState<boolean>(false);
   const [customInput, setCustomInput] = useState<string>('60');
+  const [tipMessage, setTipMessage] = useState<string>('');
 
   if (!isOpen) return null;
 
@@ -89,8 +90,9 @@ export const TipPostModal: React.FC<TipPostModalProps> = ({
 
     // Deduct amount from current user's givingWalletBalance,
     // add 95% to recipient's earningsWalletBalance,
-    // increment post's totalReceivedDrops / moments_harvested by amount
-    tipPost(post.id, tipAmount);
+    // increment post's totalReceivedDrops / moments_harvested by amount,
+    // post tip as a comment and notify the author
+    tipPost(post.id, tipAmount, tipMessage.trim() || undefined);
 
     // Call onClose() to immediately dismiss the modal
     onClose();
@@ -227,6 +229,21 @@ export const TipPostModal: React.FC<TipPostModalProps> = ({
               )}
             </div>
           )}
+        </div>
+
+        {/* Optional note that turns into a public comment */}
+        <div>
+          <label className="block text-[11px] font-semibold text-stone-600 dark:text-stone-300 mb-1">
+            Supporter Note (Optional):
+          </label>
+          <input
+            type="text"
+            value={tipMessage}
+            onChange={(e) => setTipMessage(e.target.value)}
+            placeholder="e.g. Great swale work, keep planting the rain!"
+            className="w-full px-3 py-2 rounded-xl bg-neutral-50 dark:bg-stone-950 border border-neutral-300 dark:border-stone-800 text-neutral-900 dark:text-stone-100 text-xs focus:outline-none focus:border-cyan-500 transition-colors"
+          />
+          <p className="text-[10px] text-stone-400 mt-1">This will be shared as a comment on the moment.</p>
         </div>
 
         {/* Tip Summary: User Giving Wallet Balance and Selected Tip Amount Only */}

@@ -9,7 +9,8 @@ import {
   Check,
   X,
   Sparkles,
-  ArrowRight
+  ArrowRight,
+  Settings
 } from 'lucide-react';
 import { PermacultureNotification } from '../types';
 
@@ -21,6 +22,7 @@ export interface NotificationDropdownProps {
   onMarkAsRead: (id: string) => void;
   onMarkAllAsRead: () => void;
   onClearNotification: (id: string) => void;
+  onOpenSettings?: () => void;
 }
 
 export const NotificationDropdown: React.FC<NotificationDropdownProps> = ({
@@ -30,7 +32,8 @@ export const NotificationDropdown: React.FC<NotificationDropdownProps> = ({
   notifications,
   onMarkAsRead,
   onMarkAllAsRead,
-  onClearNotification
+  onClearNotification,
+  onOpenSettings
 }) => {
   const [filter, setFilter] = useState<'all' | 'unread'>('all');
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -154,6 +157,20 @@ export const NotificationDropdown: React.FC<NotificationDropdownProps> = ({
               >
                 <CheckCheck className="h-3.5 w-3.5" />
                 <span className="whitespace-nowrap">Mark all read</span>
+              </button>
+            )}
+
+            {onOpenSettings && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenSettings();
+                }}
+                className="p-1 rounded-lg text-stone-400 hover:text-stone-200 hover:bg-neutral-800 transition-colors cursor-pointer"
+                title="Notification & Email Preferences"
+              >
+                <Settings className="h-4 w-4" />
               </button>
             )}
 
